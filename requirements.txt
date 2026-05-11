@@ -1,0 +1,7 @@
+pandas
+numpy
+scipy
+rdkit
+tqdm
+openpyxl
+pyarrow

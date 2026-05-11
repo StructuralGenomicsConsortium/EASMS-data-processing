@@ -1,0 +1,21 @@
+# Data folders (real datasets, kept locally only)
+ProcessedData/
+RawData/
+MasterLists/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
