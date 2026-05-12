@@ -42,6 +42,12 @@ Files must be named `asms_<provider>_<batch>_<library>_<YYYYMMDD>.csv` (e.g. `as
 13. **Library name is registered** — the `<library>` token must match the filename stem of a file in `MasterLists/` (excluding `MasterList_Information.xlsx`).
 14. **Date is valid `YYYYMMDD` and not in the future** — parsed with `datetime.strptime`; must be ≤ today.
 
+#### Row Content Checks
+
+15. **No fully duplicate rows** — uses `pandas.DataFrame.duplicated(keep="first")` to detect rows where every column value matches an earlier row. Reports the count and the file line numbers (1-indexed, including the header row) of the first few duplicates.
+    - **Severity: WARN, not FAIL.** Duplicate rows do *not* block the pipeline — they are removed later by Step 3 (anomaly_selection), which calls `df.drop_duplicates()`.
+    - When duplicates are found, the check writes `ProcessedData_<csv_basename>/duplicate_rows_report.csv` containing every row that is part of a duplicate group (all copies, not just the dropped ones) with a leading `FileLine` column indicating the 1-indexed line in the source CSV.
+
 #### Providers config
 
 The list of valid provider acronyms is loaded from `Providers.csv` inside `--input-dir` (next to `RawData/`). Expected format:
@@ -57,7 +63,12 @@ The real `Providers.csv` is gitignored (private company info). A fake version wi
 
 #### Extending
 
-Add more checks by appending a `(description, function)` tuple to one of the `SECTIONS` entries in [src/quality_check.py](src/quality_check.py). Each function takes `file_path, **context` and returns `(passed: bool, message: str)`. The orchestrator passes `providers=`, `libraries=`, and `meta_columns=` via context so new checks can use them too.
+Add more checks by appending a `(description, function)` tuple to one of the `SECTIONS` entries in [src/quality_check.py](src/quality_check.py). Each function takes `file_path, **context` and returns either:
+
+- `(passed: bool, message: str)` — short form. `passed=True` → PASS, `passed=False` → FAIL.
+- `(passed: bool, message: str, status: str)` — long form. `status` is one of `"PASS"`, `"FAIL"`, `"WARN"`. Use `"WARN"` for issues that should be reported in the log but should not block the pipeline (e.g. duplicate rows that downstream steps will clean up).
+
+The orchestrator passes the following keys via `context`: `providers`, `libraries`, `meta_columns`, and `output_dir` (the same folder as the log file, useful for writing supplementary report files).
 
 ### 1. Split by target — [`separate_protein_files.split_protein_data`](src/separate_protein_files.py)
 

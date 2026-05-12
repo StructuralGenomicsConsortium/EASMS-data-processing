@@ -318,6 +318,49 @@ def check_date_valid_and_not_future(file_path, **_):
     return True, f"date {date_obj.isoformat()} is valid and not in the future"
 
 
+# ---------- Row content checks ----------
+
+def check_no_duplicate_rows(file_path, output_dir=None, **_):
+    """No two rows in the file are identical across all columns.
+
+    Emits a WARN (not FAIL) when duplicates exist, because Step 3
+    (anomaly_selection) will drop them anyway. Also writes
+    `duplicate_rows_report.csv` into `output_dir` listing every row that
+    is part of a duplicate group (all copies, not just the dropped ones).
+    """
+    try:
+        df = pd.read_csv(file_path)
+    except Exception as e:
+        return False, f"could not read file: {e}"
+
+    dup_mask_first = df.duplicated(keep="first")
+    n_dups = int(dup_mask_first.sum())
+    if n_dups == 0:
+        return True, f"no fully duplicate rows (checked {len(df):,} rows)"
+
+    # Write a report of every row in any duplicate group (keep=False shows all copies)
+    report_msg = ""
+    if output_dir:
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+            report_df = df[df.duplicated(keep=False)].copy()
+            report_df.insert(0, "FileLine", report_df.index + 2)  # +2: 1-index + header
+            report_path = os.path.join(output_dir, "duplicate_rows_report.csv")
+            report_df.to_csv(report_path, index=False)
+            report_msg = f"; report saved to {report_path}"
+        except Exception as e:
+            report_msg = f"; failed to write report: {e}"
+
+    # 1-indexed line numbers including the header row (so row 0 in df is line 2)
+    dup_line_nums = [int(i) + 2 for i in dup_mask_first[dup_mask_first].index[:5]]
+    suffix = f" (and {n_dups - 5} more)" if n_dups > 5 else ""
+    return True, (
+        f"found {n_dups:,} fully duplicate row(s) "
+        f"(extras will be removed in Step 3). "
+        f"First duplicates at file line(s): {dup_line_nums}{suffix}{report_msg}"
+    ), "WARN"
+
+
 # ---------- Section registry ----------
 
 SECTIONS = [
@@ -338,6 +381,9 @@ SECTIONS = [
         ("Batch number is in valid range",               check_batch_number_range),
         ("Library name is registered",                   check_library_name),
         ("Date is valid YYYYMMDD and not in the future", check_date_valid_and_not_future),
+    ]),
+    ("Row Content Checks", [
+        ("No fully duplicate rows", check_no_duplicate_rows),
     ]),
 ]
 
@@ -371,11 +417,13 @@ def run_quality_checks(file_path, log_dir, providers_csv=None, masterlist_dir=No
     today = datetime.now().strftime("%Y%m%d")
     log_path = os.path.join(log_dir, f"QCaircheck{today}_{base_name}.log")
 
-    # Pre-load context that several checks need
+    # Pre-load context that several checks need. `output_dir` lets checks
+    # write supplementary files (e.g. duplicate_rows_report.csv) next to the log.
     context = {
         "providers":    _load_providers(providers_csv),
         "libraries":    _list_libraries(masterlist_dir),
         "meta_columns": _load_meta_columns(meta_csv),
+        "output_dir":   log_dir,
     }
 
     all_passed = True
@@ -395,14 +443,20 @@ def run_quality_checks(file_path, log_dir, providers_csv=None, masterlist_dir=No
             for description, check_fn in checks:
                 check_idx += 1
                 try:
-                    passed, message = check_fn(file_path, **context)
+                    result = check_fn(file_path, **context)
+                    # Checks can return 2-tuple (passed, msg) or 3-tuple
+                    # (passed, msg, status) where status is "PASS", "FAIL", or "WARN".
+                    if isinstance(result, tuple) and len(result) == 3:
+                        passed, message, status = result
+                    else:
+                        passed, message = result
+                        status = "PASS" if passed else "FAIL"
                 except Exception as e:
-                    passed, message = False, f"check raised an exception: {e}"
-                status = "PASS" if passed else "FAIL"
+                    passed, message, status = False, f"check raised an exception: {e}", "FAIL"
                 log.write(f"Check {check_idx}: {description}\n")
                 log.write(f"  Result : {status}\n")
                 log.write(f"  Detail : {message}\n\n")
-                if not passed:
+                if status == "FAIL":
                     all_passed = False
                     failed_checks.append((description, message))
 
