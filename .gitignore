@@ -3,6 +3,9 @@ ProcessedData*/
 RawData/
 MasterLists/
 
+# Provider list (real version contains private company info; sample is tracked)
+Providers.csv
+
 # Local-only scratch / unused scripts
 src/tempfiles/
 

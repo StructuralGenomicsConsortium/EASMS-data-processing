@@ -34,16 +34,20 @@ pip install -r requirements.txt
 
 ## 3. Run the pipeline
 
-Pass your dataset root directory (the folder containing `RawData/` and `MasterLists/`):
+The pipeline takes two paths:
+
+- `--input-dir` — folder containing `RawData/`, `MasterLists/`, and `Providers.csv`. Defaults to current directory.
+- `--output-dir` — folder where `ProcessedData_<csv>/` is created. Defaults to `--input-dir`.
 
 ```powershell
-python src/Main.py --path "D:\RawData"
-```
-
-If you omit `--path`, the pipeline defaults to the current working directory. So if you `cd` into the repo root first, your local `RawData/` and `MasterLists/` are used:
-
-```powershell
+# Run from the repo root with everything in place
 python src/Main.py
+
+# Specify input only (outputs land inside the same folder)
+python src/Main.py --input-dir "D:\my\dataset"
+
+# Separate input and output
+python src/Main.py --input-dir "D:\my\dataset" --output-dir "D:\my\results"
 ```
 
 Help text:
