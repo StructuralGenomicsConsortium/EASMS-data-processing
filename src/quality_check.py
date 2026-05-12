@@ -367,8 +367,9 @@ def run_quality_checks(file_path, log_dir, providers_csv=None, masterlist_dir=No
     """
     os.makedirs(log_dir, exist_ok=True)
     file_name = os.path.basename(file_path)
+    base_name = os.path.splitext(file_name)[0]
     today = datetime.now().strftime("%Y%m%d")
-    log_path = os.path.join(log_dir, f"QCaircheck{today}.log")
+    log_path = os.path.join(log_dir, f"QCaircheck{today}_{base_name}.log")
 
     # Pre-load context that several checks need
     context = {

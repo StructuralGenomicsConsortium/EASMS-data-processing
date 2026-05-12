@@ -18,7 +18,7 @@ The entry point is [src/Main.py](src/Main.py). It iterates over every CSV in `Ra
 
 ### 0. Quality checks — [`quality_check.run_quality_checks`](src/quality_check.py)
 
-Runs a series of pre-processing validations against the raw input file **before** any data transformation. Results are written to `ProcessedData_<csv_basename>/QCaircheck<YYYYMMDD>.log` (where `<YYYYMMDD>` is the date the check was run), grouped by section. If any check fails, the file is skipped and the rest of the pipeline does not run on it.
+Runs a series of pre-processing validations against the raw input file **before** any data transformation. Results are written to `ProcessedData_<csv_basename>/QCaircheck<YYYYMMDD>_<csv_basename>.log` (where `<YYYYMMDD>` is the date the check was run), grouped by section. If any check fails, the file is skipped and the rest of the pipeline does not run on it.
 
 #### File Format Checks
 
@@ -32,7 +32,7 @@ Runs a series of pre-processing validations against the raw input file **before*
 
 #### Filename Format Checks
 
-Files must be named `asms_<provider>_<batch>_<library>_<YYYYMMDD>.csv` (e.g. `asms_sgcto_01_Chemdiv_9k_20260512.csv`).
+Files must be named `asms_<provider>_<batch>_<library>_<YYYYMMDD>.csv` (e.g. `asms_acmecorp_01_Chemdiv_9k_20260512.csv`).
 
 8. **Filename has no special characters or spaces** — only `[A-Za-z0-9_.-]` allowed.
 9. **Filename starts with `asms_`**.
@@ -48,9 +48,9 @@ The list of valid provider acronyms is loaded from `Providers.csv` inside `--inp
 
 ```csv
 acronym,name
-sgcto,SGC Toronto
-nuge,Nuvisan ICB GmbH Germany
-azuk,AstraZeneca UK
+acmecorp,Acme Corp Research Labs
+fakelab,FakeLab Pharmaceuticals Inc
+genericrx,GenericRx Therapeutics
 ```
 
 The real `Providers.csv` is gitignored (private company info). A fake version with placeholder names lives at [Providers_sample.csv](Providers_sample.csv) — copy it into your `--input-dir` as `Providers.csv` and replace the entries with the real acronyms.
@@ -155,7 +155,7 @@ For each input CSV, the pipeline creates one `ProcessedData_<csv_basename>/` fol
 
 ```
 ProcessedData_<csv_basename>/
-├── QCaircheck<YYYYMMDD>.log     # step 0 (date the check was run)
+├── QCaircheck<YYYYMMDD>_<csv_basename>.log    # step 0 (date the check was run)
 ├── Step1_Separated/             # step 1 — split by target           (CSV)
 │   └── <target>.csv
 ├── Step2_WithScores/            # step 2 — score columns added       (CSV)
