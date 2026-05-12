@@ -3,11 +3,17 @@ import pandas as pd
 import numpy as np
 import scipy.stats as stats
 
-def compute_and_add_scores(file_paths):
+def compute_and_add_scores(file_paths, output_dir=None):
     """
     Computes TARGET_VALUE, ENRICHMENT, SELECTIVE_ENRICHMENT, EASMS_ENRICHMENT,
     MEAN_NONTARGET_VALUES, and PVALUE for a list of CSV files.
     Each file is processed individually, using all other files to compute comparison values.
+
+    If output_dir is provided, saves each scored file to that directory using the
+    original basename. Otherwise saves back to the original file path (in-place).
+
+    Returns:
+        list[str]: Paths of the saved (scored) files.
     """
     if not file_paths:
         print("No files provided for score computation.")
@@ -105,9 +111,18 @@ def compute_and_add_scores(file_paths):
 
         df["PVALUE"] = df.apply(calculate_p_value, axis=1)
 
-    # Step 3: Save the updated files
+    # Step 3: Save the updated files (either in place or into output_dir)
+    saved_paths = []
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
     for file_path, df in dataframes.items():
-        df.to_csv(file_path, index=False)
-        print(f"Updated and saved: {file_path}")
+        if output_dir:
+            out_path = os.path.join(output_dir, os.path.basename(file_path))
+        else:
+            out_path = file_path
+        df.to_csv(out_path, index=False)
+        saved_paths.append(out_path)
+        print(f"Updated and saved: {out_path}")
 
     print("\nAll files have been processed and saved with computed scores.")
+    return saved_paths

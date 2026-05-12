@@ -16,6 +16,21 @@ This repository contains a Python-based data curation pipeline for processing Af
 
 The entry point is [src/Main.py](src/Main.py). It iterates over every CSV in `RawData/` and runs the steps below per file. Each step is implemented in its own module so it can be edited or reused on its own.
 
+### 0. Quality checks — [`quality_check.run_quality_checks`](src/quality_check.py)
+
+Runs a series of pre-processing validations against the raw input file **before** any data transformation. Results are written to `ProcessedData_<csv_basename>/QCLog-<csv_basename>.log`. If any check fails, the file is skipped and the rest of the pipeline does not run on it.
+
+Current checks (in order):
+
+1. **File opens without errors** — verifies the OS can open the file for reading.
+2. **File is a CSV (extension)** — verifies the file extension is `.csv`.
+3. **File is not empty** — verifies size > 0 bytes.
+4. **File size is under 10 GB** — guards against accidentally pointing at something huge. Limit is `MAX_FILE_SIZE_GB` at the top of [src/quality_check.py](src/quality_check.py).
+5. **File encoding is UTF-8** — reads the file in chunks and verifies it decodes cleanly with no encoding errors.
+6. **File is a CSV (parseable content)** — uses `pandas.read_csv(nrows=5)` to confirm the content actually parses as CSV (catches binary files or other formats accidentally renamed to `.csv`).
+
+Add more checks by appending a `(description, function)` tuple to the `CHECKS` list in [src/quality_check.py](src/quality_check.py). Each function takes `file_path` and returns `(passed: bool, message: str)`.
+
 ### 1. Split by target — [`separate_protein_files.split_protein_data`](src/separate_protein_files.py)
 
 Groups rows in the raw CSV by `TARGET_ID` and writes one CSV per target into `ProcessedData_<csv_basename>/Separated_Files/`. Requires `PROTEIN_NUMBER`, `ASMS_BATCH_NUM`, and `TARGET_ID` columns.
@@ -69,44 +84,61 @@ Looks up the master-list file for the current raw CSV via `MasterList_Informatio
 
 ### 6. Generate ML labels — [`produce_ml_labels.generate_ml_labels`](src/produce_ml_labels.py)
 
-Assigns an `AIRCHECK_LABEL` integer based on `EASMS_ENRICHMENT`, `PVALUE`, `ISOMERS`, and `HAD_DUPLICATE_INTENSITY` (values range from −2 to 4 — see the module's docstring for the exact rules). The DataFrame at this point is saved to `MLReady/<target>.csv` and `.parquet`.
+Assigns an `AIRCHECK_LABEL` integer based on `EASMS_ENRICHMENT`, `PVALUE`, `ISOMERS`, and `HAD_DUPLICATE_INTENSITY` (values range from −2 to 4 — see the module's docstring for the exact rules). This is the last CSV-format step.
 
-### 7. Extract chemical fingerprints — [`fingerprint_extraction.extract_fingerprints`](src/fingerprint_extraction.py)
+### 7. Extract fingerprints + rename + binary label — [`fingerprint_extraction.extract_fingerprints`](src/fingerprint_extraction.py)
 
-Uses RDKit (via [src/fingerprints.py](src/fingerprints.py) and [src/utils.py](src/utils.py)) to add per-compound molecular descriptors and fingerprints:
-- Descriptors: `MW`, `ALOGP`
-- Fingerprints: `ECFP4`, `ECFP6`, `FCFP4`, `FCFP6`, `MACCS`, `RDK`, `AVALON`, `TOPTOR`, `ATOMPAIR`
+Three transformations applied together:
 
-### 8. Rename / derive columns — inline in [src/Main.py](src/Main.py)
+- **Fingerprints / descriptors** (via [src/fingerprints.py](src/fingerprints.py), [src/utils.py](src/utils.py)): `MW`, `ALOGP`, and `ECFP4`, `ECFP6`, `FCFP4`, `FCFP6`, `MACCS`, `RDK`, `AVALON`, `TOPTOR`, `ATOMPAIR`.
+- **Column renames** (inline in `Main.py`): `TARGET_VALUE` → `TARGET_INTENSITY_VALUE`, `MEAN_NONTARGET_VALUES` → `NONTARGET_INTENSITY_VALUE`.
+- **Binary label**: `LABEL = 1 if BINARY_LABEL == "Y" else 0`.
 
-- `TARGET_VALUE` → `TARGET_INTENSITY_VALUE`
-- `MEAN_NONTARGET_VALUES` → `NONTARGET_INTENSITY_VALUE`
-- Adds `LABEL = 1 if BINARY_LABEL == "Y" else 0`
+This is the first Parquet-format step (CSV is dropped because the wide fingerprint columns make it slow and huge).
 
-### 9. Select final columns and save — [`column_selection.select_final_columns`](src/column_selection.py)
+### 8. Select full column set — [`column_selection.select_final_columns`](src/column_selection.py)
 
-Applied twice with two different column lists defined in `Main.py`:
+Reads the Step 7 output and selects `DesiredColumns` (46 cols: all metadata + scores + labels + fingerprints). Saved as Parquet.
 
-- **`DesiredColumns`** (46 cols — all metadata + scores + labels + fingerprints) → `MLReady_FullColumns/<target>.csv` and `.parquet`
-- **`DesiredColumns2`** (19 cols — slim model-input set: IDs, target info, scores, label, MW, ALOGP, fingerprints) → `MLReady_KeyColumns/<target>.csv` and `.parquet`
+### 9. Select key column set — [`column_selection.select_final_columns`](src/column_selection.py)
+
+Reads the **same Step 7 output** (parallel branch — *not* downstream of Step 8) and selects `DesiredColumns2` (19 cols: IDs, target info, scores, label, MW, ALOGP, fingerprints). Saved as Parquet.
+
+## Running a Subset of Steps
+
+Use `--start-from N` and `--end-at N` to resume from or stop at a specific step. Earlier steps that have already been saved are loaded from disk; later steps are skipped.
+
+```powershell
+# Re-run only fingerprint extraction onward (steps 1-6 are loaded from disk)
+python src/Main.py --start-from 7
+
+# Run only step 9 (re-derive the key column subset) using Step 7's saved Parquet
+python src/Main.py --start-from 9 --end-at 9
+
+# Run just the early cleaning (steps 1-5), stop before label generation
+python src/Main.py --end-at 5
+```
+
+`--start-from` accepts 0–9 (0 = Quality Check), `--end-at` accepts 0–9. Defaults: `--start-from 0 --end-at 9` (run everything, including QC). Step 0 (QC) runs only when `--start-from 0`.
 
 ## Output Layout
 
-For each input CSV, the pipeline creates one `ProcessedData_<csv_basename>/` folder at the dataset root:
+For each input CSV, the pipeline creates one `ProcessedData_<csv_basename>/` folder at the dataset root. Each step's output lives in its own folder so any step can be re-run from saved checkpoints:
 
 ```
 ProcessedData_<csv_basename>/
-├── Separated_Files/         # output of step 1
+├── QCLog-<csv_basename>.log     # step 0
+├── Step1_Separated/             # step 1 — split by target           (CSV)
 │   └── <target>.csv
-├── MLReady/                 # output of step 6 (labeled, no fingerprints)
-│   ├── <target>.csv
+├── Step2_WithScores/            # step 2 — score columns added       (CSV)
+├── Step3_AnomalyFiltered/       # step 3 — anomalies resolved        (CSV)
+├── Step4_IsomerHandled/         # step 4 — isomers split             (CSV)
+├── Step5_WithNegatives/         # step 5 — masterlist negatives      (CSV)
+├── Step6_MLReady/               # step 6 — labels added              (CSV)
+├── Step7_WithFingerprints/      # step 7 — FPs + rename + LABEL      (Parquet)
 │   └── <target>.parquet
-├── MLReady_FullColumns/     # output of step 9 (full metadata + fingerprints)
-│   ├── <target>.csv
-│   └── <target>.parquet
-└── MLReady_KeyColumns/      # output of step 9 (slim model-input + fingerprints)
-    ├── <target>.csv
-    └── <target>.parquet
+├── Step8_FullColumns/           # step 8 — full column subset        (Parquet)
+└── Step9_KeyColumns/            # step 9 — slim column subset        (Parquet)
 ```
 
 ## Data Inputs

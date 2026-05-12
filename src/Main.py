@@ -19,119 +19,193 @@ from produce_ml_labels import generate_ml_labels
 from add_negatives import add_negative_samples_from_masterlist
 from fingerprint_extraction import extract_fingerprints
 from column_selection import select_final_columns
+from quality_check import run_quality_checks
 
-def process_csv_files(data_path, masterlist_path, path, MasterList_Information, DesiredColumns):
-    """Processes all CSV files through data curation steps."""
+STEP_FOLDERS = {
+    1: "Step1_Separated",
+    2: "Step2_WithScores",
+    3: "Step3_AnomalyFiltered",
+    4: "Step4_IsomerHandled",
+    5: "Step5_WithNegatives",
+    6: "Step6_MLReady",
+    7: "Step7_WithFingerprints",
+    8: "Step8_FullColumns",
+    9: "Step9_KeyColumns",
+}
 
-    # Step 1: Separate protein-related data and store in subfolders
+# Steps 1-6 save CSV; steps 7-9 save Parquet (fingerprints make CSVs unwieldy).
+PARQUET_FROM_STEP = 7
+
+
+def _step_input_files(start_from, step_dirs, scored_files):
+    """Return the list of files to feed into the per-target loop based on start_from.
+
+    Steps 8 and 9 both branch from Step 7's output, so when resuming at 8 or 9 we
+    read from Step7, not the immediately preceding step.
+    """
+    if start_from <= 3:
+        return scored_files
+    load_step = 7 if start_from in (8, 9) else (start_from - 1)
+    load_dir = step_dirs[load_step]
+    ext = ".parquet" if load_step >= PARQUET_FROM_STEP else ".csv"
+    return sorted(
+        os.path.join(load_dir, f) for f in os.listdir(load_dir) if f.endswith(ext)
+    )
+
+
+def process_csv_files(data_path, masterlist_path, path, MasterList_Information,
+                      DesiredColumns, DesiredColumns2, start_from=1, end_at=9):
+    """Processes all CSV files through data curation steps 1..9.
+
+    start_from / end_at gate which steps execute. Steps not run are loaded from
+    their saved output on disk, so the pipeline can resume from any checkpoint.
+    Step 0 (QC) only runs when start_from <= 1.
+    """
     for file_name in os.listdir(data_path):
-        if file_name.endswith(".csv"):
-            file_path = os.path.join(data_path, file_name)
-            print(f"Processing: {file_name}")
+        if not file_name.endswith(".csv"):
+            continue
 
-            # Per-CSV output folders: ProcessedData_<csv_basename>/...
-            csv_basename = os.path.splitext(file_name)[0]
-            processed_data_dir = os.path.join(path, f"ProcessedData_{csv_basename}")
-            separated_files_dir = os.path.join(processed_data_dir, "Separated_Files")
-            output_dir1 = os.path.join(processed_data_dir, "MLReady")
-            output_dir2 = os.path.join(processed_data_dir, "MLReady_FullColumns")
-            output_dir3 = os.path.join(processed_data_dir, "MLReady_KeyColumns")
-            os.makedirs(separated_files_dir, exist_ok=True)
-            os.makedirs(output_dir1, exist_ok=True)
-            os.makedirs(output_dir2, exist_ok=True)
-            os.makedirs(output_dir3, exist_ok=True)
+        file_path = os.path.join(data_path, file_name)
+        print(f"Processing: {file_name}")
 
-            # Step 1: Split protein files
-            separated_files = split_protein_data(file_path, separated_files_dir)
-            
-            # Step 2: Compute and Add Scores to all separated files together
+        csv_basename = os.path.splitext(file_name)[0]
+        processed_data_dir = os.path.join(path, f"ProcessedData_{csv_basename}")
+        os.makedirs(processed_data_dir, exist_ok=True)
+
+        step_dirs = {n: os.path.join(processed_data_dir, name) for n, name in STEP_FOLDERS.items()}
+
+        # Step 0: QC (only when start-from == 0)
+        if start_from <= 0:
+            qc_passed = run_quality_checks(file_path, processed_data_dir)
+            if not qc_passed:
+                print(f"  Quality checks FAILED for {file_name}. See {processed_data_dir}/QCLog-{csv_basename}.log. Skipping.")
+                continue
+            print(f"  Quality checks PASSED for {file_name}.")
+
+        # If end_at < 1 the user only wants QC; nothing else needs Step 1 output.
+        if end_at < 1:
+            continue
+
+        # ---- Step 1: split by target ----
+        if start_from <= 1:
+            os.makedirs(step_dirs[1], exist_ok=True)
+            separated_files = split_protein_data(file_path, step_dirs[1])
+        else:
+            separated_files = sorted(
+                os.path.join(step_dirs[1], f) for f in os.listdir(step_dirs[1]) if f.endswith(".csv")
+            )
+        if end_at < 2:
+            continue
+
+        # ---- Step 2: compute scores (batch over all separated files) ----
+        if start_from <= 2:
+            os.makedirs(step_dirs[2], exist_ok=True)
             print("\nComputing and Adding Scores to All Separated Files...\n")
-            compute_and_add_scores(separated_files)  # Process scores in a batch  
+            scored_files = compute_and_add_scores(separated_files, output_dir=step_dirs[2])
+        else:
+            scored_files = sorted(
+                os.path.join(step_dirs[2], f) for f in os.listdir(step_dirs[2]) if f.endswith(".csv")
+            )
+        if end_at < 3:
+            continue
 
+        # ---- Steps 3..9: per-target loop ----
+        entry_files = _step_input_files(start_from, step_dirs, scored_files)
 
-            # Step 3-8: Process each separated file after computing scores
-            for sep_file in separated_files:
-                sep_file_name = os.path.basename(sep_file)
-                base_name = os.path.splitext(sep_file_name)[0]
-                print(f"  Processing separated file: {sep_file_name}")
-        
-                # Load separated file
-                df = pd.read_csv(sep_file)
-        
-                # Step 3: Identify and filter out anomalies
-                df = filter_anomalous_data(df,sep_file_name)
-        
-                # Step 4: Handle isomer-specific corrections
-                df = handle_isomers(df,sep_file_name)
-        
-                # Step 5: Add additional negative samples from master list
-                df = add_negative_samples_from_masterlist(df, file_name, masterlist_path,MasterList_Information)
-                
-                # Step 6: Generate ML labels
+        for input_file in entry_files:
+            base_name = os.path.splitext(os.path.basename(input_file))[0]
+            print(f"  Processing separated file: {base_name}")
+
+            if input_file.endswith(".parquet"):
+                df = pd.read_parquet(input_file)
+            else:
+                df = pd.read_csv(input_file)
+
+            # Step 3: filter anomalies
+            if start_from <= 3 and end_at >= 3:
+                os.makedirs(step_dirs[3], exist_ok=True)
+                df = filter_anomalous_data(df, f"{base_name}.csv")
+                df.to_csv(os.path.join(step_dirs[3], f"{base_name}.csv"), index=False)
+
+            # Step 4: handle isomers
+            if start_from <= 4 and end_at >= 4:
+                os.makedirs(step_dirs[4], exist_ok=True)
+                df = handle_isomers(df, f"{base_name}.csv")
+                df.to_csv(os.path.join(step_dirs[4], f"{base_name}.csv"), index=False)
+
+            # Step 5: add negative samples
+            if start_from <= 5 and end_at >= 5:
+                os.makedirs(step_dirs[5], exist_ok=True)
+                df = add_negative_samples_from_masterlist(df, file_name, masterlist_path, MasterList_Information)
+                df.to_csv(os.path.join(step_dirs[5], f"{base_name}.csv"), index=False)
+
+            # Step 6: generate ML labels (last CSV step)
+            if start_from <= 6 and end_at >= 6:
+                os.makedirs(step_dirs[6], exist_ok=True)
                 df = generate_ml_labels(df)
-        
-                # Save curated CSV file (MLReady)
-                output_file1_csv = os.path.join(output_dir1, f"{base_name}.csv")
-                df.to_csv(output_file1_csv, index=False)
+                df.to_csv(os.path.join(step_dirs[6], f"{base_name}.csv"), index=False)
 
-                output_file1_parquet = os.path.join(output_dir1, f"{base_name}.parquet")
-                df.to_parquet(output_file1_parquet, index=False)
-                
-                print(f"  Saved intermediate file: {output_file1_csv}")
-        
-                # Step 7: Extract chemical fingerprints
-                df = extract_fingerprints(df) 
-        
-        
-                # Step 8: 
-                # RenameColumns
-                df = df.rename(columns={"TARGET_VALUE": "TARGET_INTENSITY_VALUE"})
-                df = df.rename(columns={"MEAN_NONTARGET_VALUES": "NONTARGET_INTENSITY_VALUE"})
-                
-                # Creates a new column LABEL with 1 if BINARY_LABEL is "Y", and 0 if it's "N":
+            # Step 7: extract fingerprints + rename + add binary LABEL (first Parquet step)
+            if start_from <= 7 and end_at >= 7:
+                os.makedirs(step_dirs[7], exist_ok=True)
+                df = extract_fingerprints(df)
+                df = df.rename(columns={
+                    "TARGET_VALUE": "TARGET_INTENSITY_VALUE",
+                    "MEAN_NONTARGET_VALUES": "NONTARGET_INTENSITY_VALUE",
+                })
                 df["LABEL"] = (df["BINARY_LABEL"] == "Y").astype(int)
-                
-                # Step 9: Select final columns
-                df = select_final_columns(df, DesiredColumns)                
-       
-                # Save as CSV
-                output_file2_csv = os.path.join(output_dir2, f"{base_name}.csv")
-                df.to_csv(output_file2_csv, index=False)
+                df.to_parquet(os.path.join(step_dirs[7], f"{base_name}.parquet"), index=False)
 
-                # Save as Parquet
-                output_file2_parquet = os.path.join(output_dir2, f"{base_name}.parquet")
-                df.to_parquet(output_file2_parquet, index=False)
-                
-                print(f"Saved CSV: {output_file2_csv}")
-                print(f"Saved Parquet: {output_file2_parquet}")
-                #-----------------------
-                df = select_final_columns(df, DesiredColumns2)                
-       
-                # Save as CSV
-                output_file3_csv = os.path.join(output_dir3, f"{base_name}.csv")
-                df.to_csv(output_file3_csv, index=False)
+            # Steps 8 and 9 both read the Step 7 dataframe (parallel branches).
+            # select_final_columns returns a new DataFrame, so `df` stays intact
+            # between the two calls.
 
-                # Save as Parquet
-                output_file3_parquet = os.path.join(output_dir3, f"{base_name}.parquet")
-                df.to_parquet(output_file3_parquet, index=False)
-                print(f"Saved CSV: {output_file3_csv}")
-                print(f"Saved Parquet: {output_file3_parquet}")
-                
+            # Step 8: select full column set
+            if start_from <= 8 and end_at >= 8:
+                os.makedirs(step_dirs[8], exist_ok=True)
+                df_full = select_final_columns(df, DesiredColumns)
+                df_full.to_parquet(os.path.join(step_dirs[8], f"{base_name}.parquet"), index=False)
+
+            # Step 9: select key (slim) column set
+            if start_from <= 9 and end_at >= 9:
+                os.makedirs(step_dirs[9], exist_ok=True)
+                df_key = select_final_columns(df, DesiredColumns2)
+                df_key.to_parquet(os.path.join(step_dirs[9], f"{base_name}.parquet"), index=False)
 
 
-def main(data_path, masterlist_path, path, MasterList_Information, DesiredColumns):
+def main(data_path, masterlist_path, path, MasterList_Information,
+         DesiredColumns, DesiredColumns2, start_from=1, end_at=9):
     """Main function to execute the full data curation pipeline."""
-    process_csv_files(data_path, masterlist_path, path, MasterList_Information, DesiredColumns)
+    process_csv_files(data_path, masterlist_path, path, MasterList_Information,
+                      DesiredColumns, DesiredColumns2, start_from=start_from, end_at=end_at)
 
 if __name__ == "__main__":
     # Define paths (Modify as needed)
     parser = argparse.ArgumentParser(description="Run EASMS data processing pipeline.")
     parser.add_argument(
         "--path",
-        default=os.path.abspath(os.path.join(os.getcwd(), "..")),
-        help="Dataset root directory containing RawData/ and MasterLists/ (default: parent of cwd).",
+        default=os.getcwd(),
+        help="Dataset root directory containing RawData/ and MasterLists/ (default: current working directory).",
+    )
+    parser.add_argument(
+        "--start-from",
+        type=int,
+        default=0,
+        choices=range(0, 10),
+        metavar="N",
+        help="Step number to start running from (0-9). 0 = Quality Check. Earlier steps are loaded from their saved output. Default: 0.",
+    )
+    parser.add_argument(
+        "--end-at",
+        type=int,
+        default=9,
+        choices=range(0, 10),
+        metavar="N",
+        help="Step number to stop after (0-9). 0 = run only Quality Check, then stop. Later steps are skipped. Default: 9.",
     )
     args = parser.parse_args()
+    if args.start_from > args.end_at:
+        parser.error(f"--start-from ({args.start_from}) cannot be greater than --end-at ({args.end_at}).")
     path = args.path
     data_path = os.path.join(path, "RawData")
     masterlist_path = os.path.join(path, "MasterLists")
@@ -205,4 +279,6 @@ if __name__ == "__main__":
      'TOPTOR',
      'ATOMPAIR']
 
-    main(data_path, masterlist_path, path, MasterList_Information, DesiredColumns)
+    main(data_path, masterlist_path, path, MasterList_Information,
+         DesiredColumns, DesiredColumns2,
+         start_from=args.start_from, end_at=args.end_at)
