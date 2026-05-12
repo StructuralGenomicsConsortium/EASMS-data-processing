@@ -86,7 +86,7 @@ def process_csv_files(data_path, masterlist_path, output_dir, providers_csv,
                 meta_csv=meta_csv,
             )
             if not qc_passed:
-                log_path = os.path.join(processed_data_dir, f"QCaircheck{datetime.now().strftime('%Y%m%d')}.log")
+                log_path = os.path.join(processed_data_dir, f"QCaircheck{datetime.now().strftime('%Y%m%d')}_{csv_basename}.log")
                 bar = "=" * 70
                 print()
                 print(bar)
