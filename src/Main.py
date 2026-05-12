@@ -20,7 +20,7 @@ from add_negatives import add_negative_samples_from_masterlist
 from fingerprint_extraction import extract_fingerprints
 from column_selection import select_final_columns
 
-def process_csv_files(data_path, masterlist_path, separated_files_dir, output_dir1, output_dir2, output_dir3, MasterList_Information, DesiredColumns):
+def process_csv_files(data_path, masterlist_path, path, MasterList_Information, DesiredColumns):
     """Processes all CSV files through data curation steps."""
 
     # Step 1: Separate protein-related data and store in subfolders
@@ -29,12 +29,20 @@ def process_csv_files(data_path, masterlist_path, separated_files_dir, output_di
             file_path = os.path.join(data_path, file_name)
             print(f"Processing: {file_name}")
 
-            # Create a subfolder for the separated files
-            subfolder = os.path.join(separated_files_dir, os.path.splitext(file_name)[0])
-            os.makedirs(subfolder, exist_ok=True)
+            # Per-CSV output folders: ProcessedData_<csv_basename>/...
+            csv_basename = os.path.splitext(file_name)[0]
+            processed_data_dir = os.path.join(path, f"ProcessedData_{csv_basename}")
+            separated_files_dir = os.path.join(processed_data_dir, "Separated_Files")
+            output_dir1 = os.path.join(processed_data_dir, "MLReady")
+            output_dir2 = os.path.join(processed_data_dir, "MLReady_FullColumns")
+            output_dir3 = os.path.join(processed_data_dir, "MLReady_KeyColumns")
+            os.makedirs(separated_files_dir, exist_ok=True)
+            os.makedirs(output_dir1, exist_ok=True)
+            os.makedirs(output_dir2, exist_ok=True)
+            os.makedirs(output_dir3, exist_ok=True)
 
             # Step 1: Split protein files
-            separated_files = split_protein_data(file_path, subfolder)
+            separated_files = split_protein_data(file_path, separated_files_dir)
             
             # Step 2: Compute and Add Scores to all separated files together
             print("\nComputing and Adding Scores to All Separated Files...\n")
@@ -63,10 +71,10 @@ def process_csv_files(data_path, masterlist_path, separated_files_dir, output_di
                 df = generate_ml_labels(df)
         
                 # Save curated CSV file (MLReady)
-                output_file1_csv = os.path.join(output_dir1, f"MLReady_{base_name}.csv")
+                output_file1_csv = os.path.join(output_dir1, f"{base_name}.csv")
                 df.to_csv(output_file1_csv, index=False)
 
-                output_file1_parquet = os.path.join(output_dir1, f"MLReady_{base_name}.parquet")
+                output_file1_parquet = os.path.join(output_dir1, f"{base_name}.parquet")
                 df.to_parquet(output_file1_parquet, index=False)
                 
                 print(f"  Saved intermediate file: {output_file1_csv}")
@@ -87,11 +95,11 @@ def process_csv_files(data_path, masterlist_path, separated_files_dir, output_di
                 df = select_final_columns(df, DesiredColumns)                
        
                 # Save as CSV
-                output_file2_csv = os.path.join(output_dir2, f"MLReadyPlusFPs_{base_name}.csv")
+                output_file2_csv = os.path.join(output_dir2, f"{base_name}.csv")
                 df.to_csv(output_file2_csv, index=False)
-                
+
                 # Save as Parquet
-                output_file2_parquet = os.path.join(output_dir2, f"MLReadyPlusFPs_{base_name}.parquet")
+                output_file2_parquet = os.path.join(output_dir2, f"{base_name}.parquet")
                 df.to_parquet(output_file2_parquet, index=False)
                 
                 print(f"Saved CSV: {output_file2_csv}")
@@ -100,25 +108,20 @@ def process_csv_files(data_path, masterlist_path, separated_files_dir, output_di
                 df = select_final_columns(df, DesiredColumns2)                
        
                 # Save as CSV
-                output_file3_csv = os.path.join(output_dir3, f"MLReadyPlusFPs_{base_name}.csv")
+                output_file3_csv = os.path.join(output_dir3, f"{base_name}.csv")
                 df.to_csv(output_file3_csv, index=False)
-                
+
                 # Save as Parquet
-                output_file3_parquet = os.path.join(output_dir3, f"MLReadyPlusFPs_{base_name}.parquet")
+                output_file3_parquet = os.path.join(output_dir3, f"{base_name}.parquet")
                 df.to_parquet(output_file3_parquet, index=False)
                 print(f"Saved CSV: {output_file3_csv}")
                 print(f"Saved Parquet: {output_file3_parquet}")
                 
 
 
-def main(data_path, masterlist_path, separated_files_dir, output_dir1, output_dir2, output_dir3, MasterList_Information, DesiredColumns):
+def main(data_path, masterlist_path, path, MasterList_Information, DesiredColumns):
     """Main function to execute the full data curation pipeline."""
-    os.makedirs(separated_files_dir, exist_ok=True)
-    os.makedirs(output_dir1, exist_ok=True)
-    os.makedirs(output_dir2, exist_ok=True)
-    os.makedirs(output_dir3, exist_ok=True)
-
-    process_csv_files(data_path, masterlist_path, separated_files_dir, output_dir1, output_dir2, output_dir3, MasterList_Information, DesiredColumns)
+    process_csv_files(data_path, masterlist_path, path, MasterList_Information, DesiredColumns)
 
 if __name__ == "__main__":
     # Define paths (Modify as needed)
@@ -131,14 +134,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     path = args.path
     data_path = os.path.join(path, "RawData")
-    masterlist_path = os.path.join(path, "MasterLists")  
-    MasterList_Information = os.path.join(masterlist_path, "MasterList_Information.xlsx")   
-
-    processed_data_dir = os.path.join(path, "ProcessedData")
-    separated_files_dir = os.path.join(processed_data_dir, "Separated_Files")
-    output_dir1 = os.path.join(processed_data_dir, "MLReady")
-    output_dir2 = os.path.join(processed_data_dir, "MLReady_FullColumns")
-    output_dir3 = os.path.join(processed_data_dir, "MLReady_KeyColumns")
+    masterlist_path = os.path.join(path, "MasterLists")
+    MasterList_Information = os.path.join(masterlist_path, "MasterList_Information.xlsx")
 
     DesiredColumns = ['ASMS_BATCH_NUM',
      'COMPOUND_ID',
@@ -208,4 +205,4 @@ if __name__ == "__main__":
      'TOPTOR',
      'ATOMPAIR']
 
-    main(data_path, masterlist_path, separated_files_dir, output_dir1, output_dir2, output_dir3, MasterList_Information, DesiredColumns)
+    main(data_path, masterlist_path, path, MasterList_Information, DesiredColumns)

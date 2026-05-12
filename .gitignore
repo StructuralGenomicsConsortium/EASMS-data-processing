@@ -3,6 +3,9 @@ ProcessedData/
 RawData/
 MasterLists/
 
+# Local-only scratch / unused scripts
+src/tempfiles/
+
 # Python
 __pycache__/
 *.py[cod]

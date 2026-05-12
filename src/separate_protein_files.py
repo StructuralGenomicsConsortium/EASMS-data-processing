@@ -34,12 +34,10 @@ def split_protein_data(file_path, subfolder):
 
     # Group by PROTEIN_NUMBER and process each group
     for protein_number, group_df in df.groupby("TARGET_ID"):
-        # Extract batch number (NUM) and protein name
-        batch_number = group_df["ASMS_BATCH_NUM"].iloc[0]  # Take the first batch number
         protein_name = group_df["TARGET_ID"].iloc[0]  # Take the first protein name
 
         # Construct the filename
-        file_name = f"{protein_name}_AsmBatchNumber{batch_number}.csv"
+        file_name = f"{protein_name}.csv"
 
         # Define the file path
         output_path = os.path.join(subfolder, file_name)
