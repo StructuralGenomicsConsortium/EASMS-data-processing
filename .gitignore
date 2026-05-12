@@ -1,5 +1,5 @@
 # Data folders (real datasets, kept locally only)
-ProcessedData/
+ProcessedData*/
 RawData/
 MasterLists/
 
