@@ -1,26 +1,105 @@
 """
 Pre-processing quality checks for raw input files.
 
-Each check is a small function that returns (passed: bool, message: str).
-`run_quality_checks` orchestrates them, writes a log file, and returns
-True if every check passed.
+Each check is a small function with signature:
+    check(file_path, **context) -> (passed: bool, message: str)
+
+`run_quality_checks` orchestrates them, writes a log file grouped by section,
+and returns True if every check passed.
 """
 
 import codecs
 import os
+import re
 from datetime import datetime
 
 import pandas as pd
 
 
-# File size limits
+# ---------- Configuration ----------
+
 MAX_FILE_SIZE_GB = 10
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_GB * 1024 ** 3
 
+MIN_BATCH_NUMBER = 0
+MAX_BATCH_NUMBER = 10000
 
-# ---------- Individual checks ----------
+# Filename format: asms_<provider>_<batch>_<library>_<date>.csv
+# Library names may contain underscores; date (YYYYMMDD) anchors the tail.
+FILENAME_RE = re.compile(
+    r"^asms_(?P<provider>[a-z]+)_(?P<batch>\d{1,5})_(?P<library>.+)_(?P<date>\d{8})\.csv$",
+    re.IGNORECASE,
+)
 
-def check_file_opens(file_path):
+# Allowed characters in the filename (alphanumeric, underscore, period, hyphen).
+FILENAME_ALLOWED_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
+
+
+# ---------- Helpers ----------
+
+def _parse_filename(file_path):
+    """Returns the regex match object or None."""
+    return FILENAME_RE.match(os.path.basename(file_path))
+
+
+def _load_providers(providers_csv_path):
+    """Load valid provider acronyms from a CSV with an `acronym` column.
+
+    Returns a list of lowercase strings, or None if the file is missing.
+    """
+    if not providers_csv_path or not os.path.exists(providers_csv_path):
+        return None
+    try:
+        df = pd.read_csv(providers_csv_path)
+    except Exception:
+        return None
+    if "acronym" not in df.columns:
+        return []
+    return [str(a).strip().lower() for a in df["acronym"].dropna()]
+
+
+def _list_libraries(masterlist_dir):
+    """Return library names (filename stems) from MasterLists/, excluding the
+    MasterList_Information mapping file. None if directory is missing.
+    """
+    if not masterlist_dir or not os.path.isdir(masterlist_dir):
+        return None
+    libs = []
+    for name in os.listdir(masterlist_dir):
+        if name == "MasterList_Information.xlsx":
+            continue
+        stem, ext = os.path.splitext(name)
+        if ext.lower() in (".xlsx", ".xls", ".csv"):
+            libs.append(stem)
+    return libs
+
+
+def _load_meta_columns(meta_csv_path):
+    """Load the valid column names from the ASMS Meta Data reference CSV.
+
+    The reference file's header row lists the canonical column names; the
+    second row holds data types. Whitespace is stripped and duplicates
+    (e.g. an accidental trailing-space variant) are collapsed.
+
+    Returns a list of strings, or None if the file is missing/unreadable.
+    """
+    if not meta_csv_path or not os.path.exists(meta_csv_path):
+        return None
+    try:
+        df = pd.read_csv(meta_csv_path, nrows=0)
+    except Exception:
+        return None
+    seen = []
+    for col in df.columns:
+        name = str(col).strip()
+        if name and name not in seen:
+            seen.append(name)
+    return seen
+
+
+# ---------- File-format checks ----------
+
+def check_file_opens(file_path, **_):
     """File can be opened for reading."""
     try:
         with open(file_path, "rb") as f:
@@ -30,7 +109,7 @@ def check_file_opens(file_path):
     return True, "file opens for reading"
 
 
-def check_is_csv(file_path):
+def check_is_csv(file_path, **_):
     """File has a .csv extension."""
     ext = os.path.splitext(file_path)[1].lower()
     if ext == ".csv":
@@ -38,7 +117,7 @@ def check_is_csv(file_path):
     return False, f"expected '.csv', got '{ext or '(no extension)'}'"
 
 
-def check_file_not_empty(file_path):
+def check_file_not_empty(file_path, **_):
     """File size is greater than zero bytes."""
     try:
         size = os.path.getsize(file_path)
@@ -49,7 +128,7 @@ def check_file_not_empty(file_path):
     return True, f"file size is {size:,} bytes ({size / (1024 ** 2):.2f} MB)"
 
 
-def check_file_size_under_limit(file_path):
+def check_file_size_under_limit(file_path, **_):
     """File size is below the configured limit (default 10 GB)."""
     try:
         size = os.path.getsize(file_path)
@@ -66,7 +145,7 @@ def check_file_size_under_limit(file_path):
     )
 
 
-def check_encoding_is_utf8(file_path, chunk_size=1024 * 1024):
+def check_encoding_is_utf8(file_path, chunk_size=1024 * 1024, **_):
     """File contents decode cleanly as UTF-8 (reads the whole file in chunks)."""
     decoder = codecs.getincrementaldecoder("utf-8")()
     try:
@@ -84,7 +163,7 @@ def check_encoding_is_utf8(file_path, chunk_size=1024 * 1024):
     return True, "decodes as UTF-8"
 
 
-def check_csv_parseable(file_path):
+def check_csv_parseable(file_path, **_):
     """File parses as CSV via pandas; also report rows, columns, and column names."""
     try:
         df = pd.read_csv(file_path, nrows=5)
@@ -110,57 +189,223 @@ def check_csv_parseable(file_path):
     )
 
 
-# Register all checks here. Order is preserved in the log; cheap and
-# foundational checks come first so failures surface early.
-CHECKS = [
-    ("File opens without errors",                check_file_opens),
-    ("File is a CSV (extension)",                check_is_csv),
-    ("File is not empty",                        check_file_not_empty),
-    (f"File size is under {MAX_FILE_SIZE_GB} GB", check_file_size_under_limit),
-    ("File encoding is UTF-8",                   check_encoding_is_utf8),
-    ("File is a CSV (parseable content)",        check_csv_parseable),
+def check_columns_match_metadata(file_path, meta_columns=None, **_):
+    """File's column names match the reference list in ASMS Meta Data.csv."""
+    if meta_columns is None:
+        return False, "metadata reference unavailable (ASMS Meta Data.csv not found)"
+    if not meta_columns:
+        return False, "metadata reference has no columns"
+
+    try:
+        df = pd.read_csv(file_path, nrows=0)
+    except Exception as e:
+        return False, f"could not read file columns: {e}"
+
+    file_cols = [str(c).strip() for c in df.columns]
+    valid = set(meta_columns)
+    file_set = set(file_cols)
+
+    missing = [c for c in meta_columns if c not in file_set]
+    extra   = [c for c in file_cols    if c not in valid]
+
+    if not missing and not extra:
+        return True, "columns match ASMS Meta Data.csv reference"
+
+    parts = ["columns do not match ASMS Meta Data.csv"]
+    if missing:
+        parts.append(f"missing required columns ({len(missing)}): {missing}")
+    if extra:
+        parts.append(f"extra columns not in reference ({len(extra)}): {extra}")
+    return False, "; ".join(parts)
+
+
+# ---------- Filename-format checks ----------
+
+def check_filename_no_special_chars(file_path, **_):
+    """Filename has only alphanumerics, underscores, periods, and hyphens."""
+    name = os.path.basename(file_path)
+    if FILENAME_ALLOWED_RE.match(name):
+        return True, "no special characters or spaces in filename"
+    bad = sorted(set(c for c in name if not re.match(r"[A-Za-z0-9_.\-]", c)))
+    return False, f"filename contains disallowed character(s): {bad}"
+
+
+def check_filename_starts_with_asms(file_path, **_):
+    """Filename begins with 'asms_'."""
+    name = os.path.basename(file_path)
+    if name.lower().startswith("asms_"):
+        return True, "filename starts with 'asms_'"
+    return False, f"filename should start with 'asms_', got '{name[:10]}...'"
+
+
+def check_filename_overall_format(file_path, **_):
+    """Filename matches asms_<provider>_<batch>_<library>_<date>.csv."""
+    match = _parse_filename(file_path)
+    if match:
+        return True, (
+            f"parsed: provider='{match.group('provider')}', "
+            f"batch='{match.group('batch')}', "
+            f"library='{match.group('library')}', "
+            f"date='{match.group('date')}'"
+        )
+    return False, (
+        "filename does not match 'asms_<provider>_<batchN>_<library>_<YYYYMMDD>.csv'"
+    )
+
+
+def check_provider_acronym(file_path, providers=None, **_):
+    """Provider acronym in the filename is in the registered list."""
+    match = _parse_filename(file_path)
+    if not match:
+        return False, "filename did not parse; cannot extract provider"
+    provider = match.group("provider").lower()
+
+    if providers is None:
+        return False, "providers list unavailable (Providers.csv not found)"
+    if not providers:
+        return False, "providers list is empty"
+    if provider in providers:
+        return True, f"provider '{provider}' is registered"
+    return False, f"provider '{provider}' not in registered list: {providers}"
+
+
+def check_batch_number_range(file_path, **_):
+    """Batch number in the filename is between MIN_BATCH_NUMBER and MAX_BATCH_NUMBER."""
+    match = _parse_filename(file_path)
+    if not match:
+        return False, "filename did not parse; cannot extract batch number"
+    batch_str = match.group("batch")
+    try:
+        batch_int = int(batch_str)
+    except ValueError:
+        return False, f"batch number '{batch_str}' is not an integer"
+    if MIN_BATCH_NUMBER <= batch_int <= MAX_BATCH_NUMBER:
+        return True, f"batch number {batch_int} (from '{batch_str}') is in range [{MIN_BATCH_NUMBER}, {MAX_BATCH_NUMBER}]"
+    return False, (
+        f"batch number {batch_int} is outside [{MIN_BATCH_NUMBER}, {MAX_BATCH_NUMBER}]"
+    )
+
+
+def check_library_name(file_path, libraries=None, **_):
+    """Library name in the filename matches a file in MasterLists/."""
+    match = _parse_filename(file_path)
+    if not match:
+        return False, "filename did not parse; cannot extract library name"
+    library = match.group("library")
+
+    if libraries is None:
+        return False, "libraries list unavailable (MasterLists/ not found)"
+    if not libraries:
+        return False, "no registered libraries (MasterLists/ is empty)"
+    if library in libraries:
+        return True, f"library '{library}' is registered"
+    return False, f"library '{library}' not in registered list: {libraries}"
+
+
+def check_date_valid_and_not_future(file_path, **_):
+    """Date in the filename is a valid YYYYMMDD and not in the future."""
+    match = _parse_filename(file_path)
+    if not match:
+        return False, "filename did not parse; cannot extract date"
+    date_str = match.group("date")
+    try:
+        date_obj = datetime.strptime(date_str, "%Y%m%d").date()
+    except ValueError as e:
+        return False, f"date '{date_str}' is not a valid YYYYMMDD: {e}"
+    today = datetime.now().date()
+    if date_obj > today:
+        return False, f"date {date_obj.isoformat()} is in the future (today is {today.isoformat()})"
+    return True, f"date {date_obj.isoformat()} is valid and not in the future"
+
+
+# ---------- Section registry ----------
+
+SECTIONS = [
+    ("File Format Checks", [
+        ("File opens without errors",                check_file_opens),
+        ("File is a CSV (extension)",                check_is_csv),
+        ("File is not empty",                        check_file_not_empty),
+        (f"File size is under {MAX_FILE_SIZE_GB} GB", check_file_size_under_limit),
+        ("File encoding is UTF-8",                   check_encoding_is_utf8),
+        ("File is a CSV (parseable content)",        check_csv_parseable),
+        ("Columns match ASMS Meta Data.csv reference", check_columns_match_metadata),
+    ]),
+    ("Filename Format Checks", [
+        ("Filename has no special characters or spaces", check_filename_no_special_chars),
+        ("Filename starts with 'asms_'",                 check_filename_starts_with_asms),
+        ("Filename matches overall format",              check_filename_overall_format),
+        ("Provider acronym is registered",               check_provider_acronym),
+        ("Batch number is in valid range",               check_batch_number_range),
+        ("Library name is registered",                   check_library_name),
+        ("Date is valid YYYYMMDD and not in the future", check_date_valid_and_not_future),
+    ]),
 ]
 
 
 # ---------- Orchestrator ----------
 
-def run_quality_checks(file_path, log_dir):
+SEPARATOR = "=" * 60
+
+
+def run_quality_checks(file_path, log_dir, providers_csv=None, masterlist_dir=None,
+                       meta_csv=None):
     """
-    Run every check in CHECKS against `file_path` and write a log file.
+    Run every check in SECTIONS against `file_path` and write a sectioned log.
 
     Args:
-        file_path (str): Path to the raw input file being validated.
-        log_dir (str):   Directory where the log file should be saved.
-                         Created if it does not exist.
+        file_path (str):       Path to the raw input file being validated.
+        log_dir (str):         Directory where the log file is written.
+        providers_csv (str):   Path to Providers.csv (acronym list). Optional.
+        masterlist_dir (str):  Path to the MasterLists/ folder. Optional.
+        meta_csv (str):        Path to ASMS Meta Data.csv (valid columns). Optional.
 
     Returns:
-        bool: True if every check passed, False otherwise.
+        tuple[bool, list[tuple[str, str]]]:
+            (all_passed, failed_checks). `failed_checks` is a list of
+            (description, message) pairs for every check that failed; empty
+            when all_passed is True.
     """
     os.makedirs(log_dir, exist_ok=True)
     file_name = os.path.basename(file_path)
-    base_name = os.path.splitext(file_name)[0]
-    log_path = os.path.join(log_dir, f"QCLog-{base_name}.log")
+    today = datetime.now().strftime("%Y%m%d")
+    log_path = os.path.join(log_dir, f"QCaircheck{today}.log")
+
+    # Pre-load context that several checks need
+    context = {
+        "providers":    _load_providers(providers_csv),
+        "libraries":    _list_libraries(masterlist_dir),
+        "meta_columns": _load_meta_columns(meta_csv),
+    }
 
     all_passed = True
+    failed_checks = []   # collected for the caller to print a nice console message
+    check_idx = 0
     with open(log_path, "w", encoding="utf-8") as log:
         log.write("Quality Check Log\n")
         log.write(f"File:      {file_name}\n")
         log.write(f"Generated: {datetime.now().isoformat(timespec='seconds')}\n")
-        log.write("=" * 60 + "\n\n")
+        log.write(SEPARATOR + "\n")
 
-        for i, (description, check_fn) in enumerate(CHECKS, start=1):
-            try:
-                passed, message = check_fn(file_path)
-            except Exception as e:
-                passed, message = False, f"check raised an exception: {e}"
-            status = "PASS" if passed else "FAIL"
-            log.write(f"Check {i}: {description}\n")
-            log.write(f"  Result : {status}\n")
-            log.write(f"  Detail : {message}\n\n")
-            if not passed:
-                all_passed = False
+        for section_name, checks in SECTIONS:
+            log.write("\n")
+            log.write(f"{section_name}\n")
+            log.write(SEPARATOR + "\n\n")
 
-        log.write("=" * 60 + "\n")
+            for description, check_fn in checks:
+                check_idx += 1
+                try:
+                    passed, message = check_fn(file_path, **context)
+                except Exception as e:
+                    passed, message = False, f"check raised an exception: {e}"
+                status = "PASS" if passed else "FAIL"
+                log.write(f"Check {check_idx}: {description}\n")
+                log.write(f"  Result : {status}\n")
+                log.write(f"  Detail : {message}\n\n")
+                if not passed:
+                    all_passed = False
+                    failed_checks.append((description, message))
+
+        log.write(SEPARATOR + "\n")
         log.write(f"Overall : {'PASS' if all_passed else 'FAIL'}\n")
 
-    return all_passed
+    return all_passed, failed_checks

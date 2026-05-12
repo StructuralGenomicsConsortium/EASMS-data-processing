@@ -10,6 +10,7 @@ test
 
 import os
 import argparse
+from datetime import datetime
 import pandas as pd
 from separate_protein_files import split_protein_data
 from add_scores import compute_and_add_scores
@@ -53,13 +54,14 @@ def _step_input_files(start_from, step_dirs, scored_files):
     )
 
 
-def process_csv_files(data_path, masterlist_path, path, MasterList_Information,
-                      DesiredColumns, DesiredColumns2, start_from=1, end_at=9):
+def process_csv_files(data_path, masterlist_path, output_dir, providers_csv,
+                      MasterList_Information, DesiredColumns, DesiredColumns2,
+                      start_from=0, end_at=9, meta_csv=None):
     """Processes all CSV files through data curation steps 1..9.
 
     start_from / end_at gate which steps execute. Steps not run are loaded from
     their saved output on disk, so the pipeline can resume from any checkpoint.
-    Step 0 (QC) only runs when start_from <= 1.
+    Step 0 (QC) only runs when start_from <= 0.
     """
     for file_name in os.listdir(data_path):
         if not file_name.endswith(".csv"):
@@ -69,16 +71,37 @@ def process_csv_files(data_path, masterlist_path, path, MasterList_Information,
         print(f"Processing: {file_name}")
 
         csv_basename = os.path.splitext(file_name)[0]
-        processed_data_dir = os.path.join(path, f"ProcessedData_{csv_basename}")
+        processed_data_dir = os.path.join(output_dir, f"ProcessedData_{csv_basename}")
         os.makedirs(processed_data_dir, exist_ok=True)
 
         step_dirs = {n: os.path.join(processed_data_dir, name) for n, name in STEP_FOLDERS.items()}
 
         # Step 0: QC (only when start-from == 0)
         if start_from <= 0:
-            qc_passed = run_quality_checks(file_path, processed_data_dir)
+            qc_passed, qc_failures = run_quality_checks(
+                file_path,
+                processed_data_dir,
+                providers_csv=providers_csv,
+                masterlist_dir=masterlist_path,
+                meta_csv=meta_csv,
+            )
             if not qc_passed:
-                print(f"  Quality checks FAILED for {file_name}. See {processed_data_dir}/QCLog-{csv_basename}.log. Skipping.")
+                log_path = os.path.join(processed_data_dir, f"QCaircheck{datetime.now().strftime('%Y%m%d')}.log")
+                bar = "=" * 70
+                print()
+                print(bar)
+                print(f"  Quality checks FAILED for: {file_name}")
+                print(bar)
+                print(f"  {len(qc_failures)} check(s) did not pass:")
+                print()
+                for desc, msg in qc_failures:
+                    print(f"    - {desc}")
+                    print(f"        {msg}")
+                print()
+                print(f"  Full log: {log_path}")
+                print(f"  Skipping {file_name} -- no downstream steps will run.")
+                print(bar)
+                print()
                 continue
             print(f"  Quality checks PASSED for {file_name}.")
 
@@ -173,19 +196,26 @@ def process_csv_files(data_path, masterlist_path, path, MasterList_Information,
                 df_key.to_parquet(os.path.join(step_dirs[9], f"{base_name}.parquet"), index=False)
 
 
-def main(data_path, masterlist_path, path, MasterList_Information,
-         DesiredColumns, DesiredColumns2, start_from=1, end_at=9):
+def main(data_path, masterlist_path, output_dir, providers_csv,
+         MasterList_Information, DesiredColumns, DesiredColumns2,
+         start_from=0, end_at=9, meta_csv=None):
     """Main function to execute the full data curation pipeline."""
-    process_csv_files(data_path, masterlist_path, path, MasterList_Information,
-                      DesiredColumns, DesiredColumns2, start_from=start_from, end_at=end_at)
+    process_csv_files(data_path, masterlist_path, output_dir, providers_csv,
+                      MasterList_Information, DesiredColumns, DesiredColumns2,
+                      start_from=start_from, end_at=end_at, meta_csv=meta_csv)
 
 if __name__ == "__main__":
     # Define paths (Modify as needed)
     parser = argparse.ArgumentParser(description="Run EASMS data processing pipeline.")
     parser.add_argument(
-        "--path",
+        "--input-dir",
         default=os.getcwd(),
-        help="Dataset root directory containing RawData/ and MasterLists/ (default: current working directory).",
+        help="Input directory containing RawData/, MasterLists/, and Providers.csv (default: current working directory).",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Output directory where ProcessedData_*/ folders are created (default: same as --input-dir).",
     )
     parser.add_argument(
         "--start-from",
@@ -206,9 +236,12 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.start_from > args.end_at:
         parser.error(f"--start-from ({args.start_from}) cannot be greater than --end-at ({args.end_at}).")
-    path = args.path
-    data_path = os.path.join(path, "RawData")
-    masterlist_path = os.path.join(path, "MasterLists")
+    input_dir = args.input_dir
+    output_dir = args.output_dir if args.output_dir else input_dir
+    data_path = os.path.join(input_dir, "RawData")
+    masterlist_path = os.path.join(input_dir, "MasterLists")
+    providers_csv = os.path.join(input_dir, "Providers.csv")
+    meta_csv = os.path.join(input_dir, "ASMS Meta Data.csv")
     MasterList_Information = os.path.join(masterlist_path, "MasterList_Information.xlsx")
 
     DesiredColumns = ['ASMS_BATCH_NUM',
@@ -279,6 +312,6 @@ if __name__ == "__main__":
      'TOPTOR',
      'ATOMPAIR']
 
-    main(data_path, masterlist_path, path, MasterList_Information,
-         DesiredColumns, DesiredColumns2,
-         start_from=args.start_from, end_at=args.end_at)
+    main(data_path, masterlist_path, output_dir, providers_csv,
+         MasterList_Information, DesiredColumns, DesiredColumns2,
+         start_from=args.start_from, end_at=args.end_at, meta_csv=meta_csv)

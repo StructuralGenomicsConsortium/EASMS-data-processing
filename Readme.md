@@ -18,18 +18,46 @@ The entry point is [src/Main.py](src/Main.py). It iterates over every CSV in `Ra
 
 ### 0. Quality checks — [`quality_check.run_quality_checks`](src/quality_check.py)
 
-Runs a series of pre-processing validations against the raw input file **before** any data transformation. Results are written to `ProcessedData_<csv_basename>/QCLog-<csv_basename>.log`. If any check fails, the file is skipped and the rest of the pipeline does not run on it.
+Runs a series of pre-processing validations against the raw input file **before** any data transformation. Results are written to `ProcessedData_<csv_basename>/QCaircheck<YYYYMMDD>.log` (where `<YYYYMMDD>` is the date the check was run), grouped by section. If any check fails, the file is skipped and the rest of the pipeline does not run on it.
 
-Current checks (in order):
+#### File Format Checks
 
 1. **File opens without errors** — verifies the OS can open the file for reading.
 2. **File is a CSV (extension)** — verifies the file extension is `.csv`.
 3. **File is not empty** — verifies size > 0 bytes.
 4. **File size is under 10 GB** — guards against accidentally pointing at something huge. Limit is `MAX_FILE_SIZE_GB` at the top of [src/quality_check.py](src/quality_check.py).
 5. **File encoding is UTF-8** — reads the file in chunks and verifies it decodes cleanly with no encoding errors.
-6. **File is a CSV (parseable content)** — uses `pandas.read_csv(nrows=5)` to confirm the content actually parses as CSV (catches binary files or other formats accidentally renamed to `.csv`).
+6. **File is a CSV (parseable content)** — uses `pandas.read_csv(nrows=5)` to confirm the content actually parses as CSV; reports row count, column count, and column names.
+7. **Columns match `ASMS Meta Data.csv` reference** — compares the input file's column names against the canonical list in `ASMS Meta Data.csv` (see *Data Inputs → ASMS Meta Data.csv*). On mismatch the log lists `missing from file: [...]` and `not in reference: [...]`.
 
-Add more checks by appending a `(description, function)` tuple to the `CHECKS` list in [src/quality_check.py](src/quality_check.py). Each function takes `file_path` and returns `(passed: bool, message: str)`.
+#### Filename Format Checks
+
+Files must be named `asms_<provider>_<batch>_<library>_<YYYYMMDD>.csv` (e.g. `asms_sgcto_01_Chemdiv_9k_20260512.csv`).
+
+8. **Filename has no special characters or spaces** — only `[A-Za-z0-9_.-]` allowed.
+9. **Filename starts with `asms_`**.
+10. **Filename matches overall format** — must parse as `asms_<provider>_<batchN>_<library>_<YYYYMMDD>.csv`.
+11. **Provider acronym is registered** — the `<provider>` token must appear in the `acronym` column of `Providers.csv` (see *Providers config* below).
+12. **Batch number is in valid range** — integer between `MIN_BATCH_NUMBER` (0) and `MAX_BATCH_NUMBER` (10000). Leading zeros are allowed (`01`, `0100`).
+13. **Library name is registered** — the `<library>` token must match the filename stem of a file in `MasterLists/` (excluding `MasterList_Information.xlsx`).
+14. **Date is valid `YYYYMMDD` and not in the future** — parsed with `datetime.strptime`; must be ≤ today.
+
+#### Providers config
+
+The list of valid provider acronyms is loaded from `Providers.csv` inside `--input-dir` (next to `RawData/`). Expected format:
+
+```csv
+acronym,name
+sgcto,SGC Toronto
+nuge,Nuvisan ICB GmbH Germany
+azuk,AstraZeneca UK
+```
+
+The real `Providers.csv` is gitignored (private company info). A fake version with placeholder names lives at [Providers_sample.csv](Providers_sample.csv) — copy it into your `--input-dir` as `Providers.csv` and replace the entries with the real acronyms.
+
+#### Extending
+
+Add more checks by appending a `(description, function)` tuple to one of the `SECTIONS` entries in [src/quality_check.py](src/quality_check.py). Each function takes `file_path, **context` and returns `(passed: bool, message: str)`. The orchestrator passes `providers=`, `libraries=`, and `meta_columns=` via context so new checks can use them too.
 
 ### 1. Split by target — [`separate_protein_files.split_protein_data`](src/separate_protein_files.py)
 
@@ -123,11 +151,11 @@ python src/Main.py --end-at 5
 
 ## Output Layout
 
-For each input CSV, the pipeline creates one `ProcessedData_<csv_basename>/` folder at the dataset root. Each step's output lives in its own folder so any step can be re-run from saved checkpoints:
+For each input CSV, the pipeline creates one `ProcessedData_<csv_basename>/` folder inside `--output-dir` (which defaults to `--input-dir`). Each step's output lives in its own folder so any step can be re-run from saved checkpoints:
 
 ```
 ProcessedData_<csv_basename>/
-├── QCLog-<csv_basename>.log     # step 0
+├── QCaircheck<YYYYMMDD>.log     # step 0 (date the check was run)
 ├── Step1_Separated/             # step 1 — split by target           (CSV)
 │   └── <target>.csv
 ├── Step2_WithScores/            # step 2 — score columns added       (CSV)
@@ -143,7 +171,27 @@ ProcessedData_<csv_basename>/
 
 ## Data Inputs
 
-The pipeline expects two input folders at the dataset root (the path given via `--path`, or the parent of the current working directory if `--path` is omitted). For instructions on how to run the pipeline, see [USAGE.md](USAGE.md).
+The pipeline reads four inputs from `--input-dir` (the path given via `--input-dir`, or the current working directory if the flag is omitted):
+
+- `RawData/` — folder of ASMS results CSVs to be processed
+- `MasterLists/` — folder of compound-library Excel files + a `MasterList_Information.xlsx` mapping file
+- `Providers.csv` — list of valid provider acronyms used in raw filenames
+- `ASMS Meta Data.csv` — canonical column-name reference each raw CSV is validated against
+
+Outputs are written to `--output-dir` (defaults to the same folder as `--input-dir`). For full run instructions see [USAGE.md](USAGE.md).
+
+```
+<input-dir>/
+├── RawData/
+│   ├── asms_<provider>_<batch>_<library>_<YYYYMMDD>.csv
+│   └── ...
+├── MasterLists/
+│   ├── MasterList_Information.xlsx
+│   ├── <library1>.xlsx
+│   └── <library2>.xlsx
+├── Providers.csv
+└── ASMS Meta Data.csv
+```
 
 ### `RawData/`
 
@@ -158,6 +206,19 @@ Excel files describing the compound libraries used in the screen. This folder mu
   - `MaterListName` — the base name (no extension) of the matching master list `.xlsx` file in `MasterLists/`
 
 - **One `.xlsx` per master list referenced above** (e.g. `Chemdiv+Chiral6k_15k.xlsx`, `Chemdiv_9k.xlsx`). Each must contain at least a `SMILES` column; it's used to draw negative samples for the model.
+
+### `ASMS Meta Data.csv`
+
+The **canonical column-name reference** for raw ASMS results files. The QC step "Columns match `ASMS Meta Data.csv` reference" (Check 7) reads it and compares the columns of each raw CSV against this list — files with missing or extra columns fail QC and are skipped.
+
+Format:
+
+- **Row 1 (header)** — the canonical column names every raw CSV is expected to have (e.g. `COMPOUND_ID, SMILES, ASMS_BATCH_NAME, COMPOUND_FORMULA, POOL_NAME, ...`).
+- **Row 2** — the data type per column (`VARCHAR`, `INT`, `FLOAT`, `BOOL`). Only row 1 is used by the checker; row 2 is informational.
+
+Only column **names** are compared (not types and not order). Whitespace around names is stripped and accidental duplicate columns are collapsed, so a stray trailing space won't cause a false failure.
+
+To change which columns are required, edit `ASMS Meta Data.csv` directly — no code change needed.
 
 ## Sample Data
 
