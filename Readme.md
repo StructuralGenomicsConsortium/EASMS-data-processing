@@ -12,6 +12,37 @@ This repository contains a Python-based data curation pipeline for processing Af
 - Extracts chemical fingerprints (e.g., ECFP4, FCFP6, MACCS)
 - Saves curated data in both CSV and Parquet formats
 
+## Requirements
+
+Before running the pipeline, make sure all of the following are in place. Items 2–5 live inside `--input-dir` (defaults to the current working directory). See **Data Inputs** below for full file-format details on each.
+
+1. **Python environment with dependencies installed** — set up `.venv` and install `requirements.txt`. Step-by-step instructions in [USAGE.md §1](USAGE.md).
+
+2. **`RawData/` folder** — one or more ASMS results CSV files, each named in the convention `asms_<provider>_<batch>_<library>_<YYYYMMDD>.csv`. Every CSV in this folder is processed.
+
+3. **`MasterLists/` folder** containing:
+   - `MasterList_Information.xlsx` — required mapping file (columns `FileName`, `MaterListName`) that links each raw CSV to its master list.
+   - One `.xlsx` per registered compound library referenced above (each must contain at least a `SMILES` column).
+
+4. **`Providers.csv`** — list of valid provider acronyms used in raw filenames. The real file is gitignored (private company info); copy [Providers_sample.csv](Providers_sample.csv) to `Providers.csv` and replace the entries with the real acronyms. Required columns: `acronym`, `name`.
+
+5. **`ASMS Meta Data.csv`** — canonical column-name reference. The first row lists every column name a raw ASMS CSV must contain; the second row holds data types (informational only). QC fails a file when its columns don't exactly match this list.
+
+Expected layout:
+
+```
+<input-dir>/
+├── RawData/
+│   ├── asms_<provider>_<batch>_<library>_<YYYYMMDD>.csv
+│   └── ...
+├── MasterLists/
+│   ├── MasterList_Information.xlsx
+│   ├── <library1>.xlsx
+│   └── <library2>.xlsx
+├── Providers.csv
+└── ASMS Meta Data.csv
+```
+
 ## Pipeline Steps
 
 The entry point is [src/Main.py](src/Main.py). It iterates over every CSV in `RawData/` and runs the steps below per file. Each step is implemented in its own module so it can be edited or reused on its own.
@@ -83,7 +114,7 @@ The orchestrator passes the following keys via `context`: `providers`, `librarie
 
 ### 1. Split by target — [`separate_protein_files.split_protein_data`](src/separate_protein_files.py)
 
-Groups rows in the raw CSV by `TARGET_ID` and writes one CSV per target into `ProcessedData_<csv_basename>/Separated_Files/`. Requires `PROTEIN_NUMBER`, `ASMS_BATCH_NUM`, and `TARGET_ID` columns.
+Groups rows in the raw CSV by `TARGET_ID` and writes one CSV per target into `ProcessedData_<csv_basename>/Separated_Files/`. Requires `PROTEIN_NUMBER`, `ASMS_BATCH_NAME`, and `TARGET_ID` columns.
 
 ### 2. Compute scores — [`add_scores.compute_and_add_scores`](src/add_scores.py)
 

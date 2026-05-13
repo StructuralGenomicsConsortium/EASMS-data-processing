@@ -244,7 +244,7 @@ if __name__ == "__main__":
     meta_csv = os.path.join(input_dir, "ASMS Meta Data.csv")
     MasterList_Information = os.path.join(masterlist_path, "MasterList_Information.xlsx")
 
-    DesiredColumns = ['ASMS_BATCH_NUM',
+    DesiredColumns = ['ASMS_BATCH_NAME',
      'COMPOUND_ID',
      'COMPOUND_FORMULA',
      'SMILES',
