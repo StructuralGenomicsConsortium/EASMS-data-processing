@@ -18,7 +18,18 @@ The entry point is [src/Main.py](src/Main.py). It iterates over every CSV in `Ra
 
 ### 0. Quality checks — [`quality_check.run_quality_checks`](src/quality_check.py)
 
-Runs a series of pre-processing validations against the raw input file **before** any data transformation. Results are written to `ProcessedData_<csv_basename>/QCaircheck<YYYYMMDD>_<csv_basename>.log` (where `<YYYYMMDD>` is the date the check was run), grouped by section. If any check fails, the file is skipped and the rest of the pipeline does not run on it.
+Runs a series of pre-processing validations against the raw input file **before** any data transformation. Results are written in two formats:
+
+- **Plain text log** — `ProcessedData_<csv_basename>/QCaircheck<YYYYMMDD>_<csv_basename>.log`, grouped by section.
+- **Excel companion** — `ProcessedData_<csv_basename>/QCaircheck<YYYYMMDD>_<csv_basename>.xlsx`, one row per check, with columns: `Section`, `Check #`, `Criteria`, `Status`, `Detail`. Rows are color-coded (green = PASS, red = FAIL, yellow = WARN), and the header row is frozen.
+
+Both files contain the same information; pick whichever is easier to read. If any check returns FAIL, the file is skipped and the rest of the pipeline does not run on it (WARN does not block).
+
+Example of the Excel companion log:
+
+![Sample QC log](SampleLog.png)
+
+The screenshot above shows a run where Check 7 (column-name match against `ASMS Meta Data.csv`) failed with both missing and extra columns, and Check 15 (duplicate rows) raised a WARN — the pipeline would skip this file because of Check 7, but the duplicate-row warning on its own would not have blocked it.
 
 #### File Format Checks
 
@@ -166,7 +177,8 @@ For each input CSV, the pipeline creates one `ProcessedData_<csv_basename>/` fol
 
 ```
 ProcessedData_<csv_basename>/
-├── QCaircheck<YYYYMMDD>_<csv_basename>.log    # step 0 (date the check was run)
+├── QCaircheck<YYYYMMDD>_<csv_basename>.log    # step 0 plain-text log (date the check was run)
+├── QCaircheck<YYYYMMDD>_<csv_basename>.xlsx   # step 0 same data in Excel (color-coded)
 ├── Step1_Separated/             # step 1 — split by target           (CSV)
 │   └── <target>.csv
 ├── Step2_WithScores/            # step 2 — score columns added       (CSV)
