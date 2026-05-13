@@ -428,11 +428,13 @@ def run_quality_checks(file_path, log_dir, providers_csv=None, masterlist_dir=No
 
     all_passed = True
     failed_checks = []   # collected for the caller to print a nice console message
+    rows = []            # accumulated for the Excel report
     check_idx = 0
+    generated_at = datetime.now().isoformat(timespec="seconds")
     with open(log_path, "w", encoding="utf-8") as log:
         log.write("Quality Check Log\n")
         log.write(f"File:      {file_name}\n")
-        log.write(f"Generated: {datetime.now().isoformat(timespec='seconds')}\n")
+        log.write(f"Generated: {generated_at}\n")
         log.write(SEPARATOR + "\n")
 
         for section_name, checks in SECTIONS:
@@ -456,6 +458,13 @@ def run_quality_checks(file_path, log_dir, providers_csv=None, masterlist_dir=No
                 log.write(f"Check {check_idx}: {description}\n")
                 log.write(f"  Result : {status}\n")
                 log.write(f"  Detail : {message}\n\n")
+                rows.append({
+                    "Section":  section_name,
+                    "Check #":  check_idx,
+                    "Criteria": description,
+                    "Status":   status,
+                    "Detail":   message,
+                })
                 if status == "FAIL":
                     all_passed = False
                     failed_checks.append((description, message))
@@ -463,4 +472,78 @@ def run_quality_checks(file_path, log_dir, providers_csv=None, masterlist_dir=No
         log.write(SEPARATOR + "\n")
         log.write(f"Overall : {'PASS' if all_passed else 'FAIL'}\n")
 
+    # Write the Excel companion next to the .log
+    excel_path = os.path.join(log_dir, f"QCaircheck{today}_{base_name}.xlsx")
+    try:
+        _write_excel_report(
+            rows=rows,
+            excel_path=excel_path,
+            file_name=file_name,
+            generated_at=generated_at,
+            overall_status="PASS" if all_passed else "FAIL",
+        )
+    except Exception as e:
+        # Excel write failure should not block QC; record in log
+        with open(log_path, "a", encoding="utf-8") as log:
+            log.write(f"\n(Note: failed to write Excel report: {e})\n")
+
     return all_passed, failed_checks
+
+
+def _write_excel_report(rows, excel_path, file_name, generated_at, overall_status):
+    """Write a color-coded Excel version of the QC log.
+
+    Layout (one sheet, "QC Results"):
+      Row 1: File:      <file_name>
+      Row 2: Generated: <iso timestamp>
+      Row 3: Overall:   <PASS/FAIL>
+      Row 4: (blank)
+      Row 5: Header (Section / Check # / Criteria / Status / Detail)
+      Row 6+: Data, with each row's background color tied to its Status.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import PatternFill, Font, Alignment
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "QC Results"
+
+    # Metadata block
+    bold = Font(bold=True)
+    ws["A1"] = "File:";      ws["B1"] = file_name
+    ws["A2"] = "Generated:"; ws["B2"] = generated_at
+    ws["A3"] = "Overall:";   ws["B3"] = overall_status
+    for addr in ("A1", "A2", "A3"):
+        ws[addr].font = bold
+
+    # Header row
+    header_row = 5
+    headers = ["Section", "Check #", "Criteria", "Status", "Detail"]
+    for col_idx, name in enumerate(headers, start=1):
+        cell = ws.cell(row=header_row, column=col_idx, value=name)
+        cell.font = bold
+
+    # Data rows with color coding by status
+    status_fills = {
+        "PASS": PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid"),
+        "FAIL": PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid"),
+        "WARN": PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid"),
+    }
+    wrap = Alignment(wrap_text=True, vertical="top")
+    for offset, row in enumerate(rows, start=1):
+        excel_row = header_row + offset
+        values = [row["Section"], row["Check #"], row["Criteria"], row["Status"], row["Detail"]]
+        for col_idx, val in enumerate(values, start=1):
+            cell = ws.cell(row=excel_row, column=col_idx, value=val)
+            cell.fill = status_fills.get(row["Status"], status_fills["PASS"])
+            cell.alignment = wrap
+
+    # Column widths
+    widths = {"A": 26, "B": 9, "C": 50, "D": 8, "E": 100}
+    for col, w in widths.items():
+        ws.column_dimensions[col].width = w
+
+    # Freeze the header row so it stays visible when scrolling
+    ws.freeze_panes = f"A{header_row + 1}"
+
+    wb.save(excel_path)
