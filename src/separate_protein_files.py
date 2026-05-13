@@ -25,7 +25,7 @@ def split_protein_data(file_path, subfolder):
     df = pd.read_csv(file_path)
 
     # Ensure necessary columns exist
-    required_columns = {"PROTEIN_NUMBER", "ASMS_BATCH_NUM", "TARGET_ID"}
+    required_columns = {"PROTEIN_NUMBER", "ASMS_BATCH_NAME", "TARGET_ID"}
     if not required_columns.issubset(df.columns):
         raise ValueError(f"Missing required columns: {required_columns - set(df.columns)}")
 
