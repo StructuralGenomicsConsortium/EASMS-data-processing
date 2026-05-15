@@ -56,7 +56,7 @@ def _step_input_files(start_from, step_dirs, scored_files):
 
 def process_csv_files(data_path, masterlist_path, output_dir, providers_csv,
                       MasterList_Information, DesiredColumns, DesiredColumns2,
-                      start_from=0, end_at=9, meta_csv=None):
+                      start_from=0, end_at=9, meta_csv=None, fp_format="array"):
     """Processes all CSV files through data curation steps 1..9.
 
     start_from / end_at gate which steps execute. Steps not run are loaded from
@@ -171,7 +171,7 @@ def process_csv_files(data_path, masterlist_path, output_dir, providers_csv,
             # Step 7: extract fingerprints + rename + add binary LABEL (first Parquet step)
             if start_from <= 7 and end_at >= 7:
                 os.makedirs(step_dirs[7], exist_ok=True)
-                df = extract_fingerprints(df)
+                df = extract_fingerprints(df, fp_format=fp_format)
                 df = df.rename(columns={
                     "TARGET_VALUE": "TARGET_INTENSITY_VALUE",
                     "MEAN_NONTARGET_VALUES": "NONTARGET_INTENSITY_VALUE",
@@ -198,11 +198,12 @@ def process_csv_files(data_path, masterlist_path, output_dir, providers_csv,
 
 def main(data_path, masterlist_path, output_dir, providers_csv,
          MasterList_Information, DesiredColumns, DesiredColumns2,
-         start_from=0, end_at=9, meta_csv=None):
+         start_from=0, end_at=9, meta_csv=None, fp_format="array"):
     """Main function to execute the full data curation pipeline."""
     process_csv_files(data_path, masterlist_path, output_dir, providers_csv,
                       MasterList_Information, DesiredColumns, DesiredColumns2,
-                      start_from=start_from, end_at=end_at, meta_csv=meta_csv)
+                      start_from=start_from, end_at=end_at, meta_csv=meta_csv,
+                      fp_format=fp_format)
 
 if __name__ == "__main__":
     # Define paths (Modify as needed)
@@ -244,6 +245,13 @@ if __name__ == "__main__":
     meta_csv = os.path.join(input_dir, "ASMS Meta Data.csv")
     MasterList_Information = os.path.join(masterlist_path, "MasterList_Information.xlsx")
 
+    # How fingerprint values are stored in the Step 7+ output columns:
+    #   "array"  (default) -> numpy float32 arrays, ready to use directly.
+    #   "string"            -> comma-separated strings (legacy format from earlier
+    #                          pipeline versions; consumers must np.fromstring back
+    #                          to arrays before use).
+    TypeOfFp = "array"
+
     DesiredColumns = ['ASMS_BATCH_NAME',
      'COMPOUND_ID',
      'COMPOUND_FORMULA',
@@ -271,8 +279,6 @@ if __name__ == "__main__":
      'PVALUE',
      'BINARY_LABEL',
      'HAD_DUPLICATE_INTENSITY',
-     'SPR',
-     'KD',
      'ISOMERS',
      'MassSpec_Detected',
      'EASMS_ENRICHMENT',
@@ -314,4 +320,5 @@ if __name__ == "__main__":
 
     main(data_path, masterlist_path, output_dir, providers_csv,
          MasterList_Information, DesiredColumns, DesiredColumns2,
-         start_from=args.start_from, end_at=args.end_at, meta_csv=meta_csv)
+         start_from=args.start_from, end_at=args.end_at, meta_csv=meta_csv,
+         fp_format=TypeOfFp)
