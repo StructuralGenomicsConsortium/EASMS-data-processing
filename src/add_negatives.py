@@ -56,8 +56,8 @@ def add_negative_samples_from_masterlist(df, file_name, masterlist_path, MasterL
         print(f"No new negative samples found for {file_name}.")
         return df
 
-    # Assign BINARY_LABEL = "N" for these new negative samples
-    new_entries["BINARY_LABEL"] = "N"
+    # Assign BINARY_LABEL = 0 for these new negative samples (integer 0/1 convention)
+    new_entries["BINARY_LABEL"] = 0
     new_entries["ENRICHMENT"] = np.nan
     new_entries["PVALUE"] = np.nan
     new_entries["MassSpec_Detected"] = "N"

@@ -21,6 +21,44 @@ The screenshot above shows a run where Check 7 (column-name match against `ASMS 
 
 Some checks also produce supplementary CSVs (e.g. `FullyDuplicate_rows_report.csv`, `invalid_smiles_report.csv`, `formula_not_in_library_report.csv`, …) next to the QC logs. They are listed under the relevant check below.
 
+## Statistics Summary
+
+After all checks run, both the `.log` and `.xlsx` outputs include a **Statistics Summary** section so you can spot-check the dataset at a glance without opening the raw CSV. It runs whether the overall result is PASS or FAIL.
+
+The `.log` ends with a plain-text block; the `.xlsx` has a second sheet named **Statistics**. Both contain the same three sub-sections, sourced from the QC-loaded dataframe (i.e. after fully-duplicate rows are dropped):
+
+1. **Overview** — total rows, total columns, distinct proteins (`TARGET_ID`), distinct compounds (`COMPOUND_ID`).
+2. **Per-protein breakdown** — for each `TARGET_ID`: row count and the `BINARY_LABEL=0` / `BINARY_LABEL=1` counts (label columns only appear when `BINARY_LABEL` exists in the input).
+3. **Numeric column statistics** — for every numeric column (`POOL_SIZE`, `PROTEIN_CONC`, `POS_INT_REP1/2/3`, `MZ`, `RT`, …): non-null count, min, max, mean.
+
+Excerpt of what the `.log` Statistics block looks like:
+
+```
+============================================================
+Statistics Summary
+============================================================
+
+Total rows:    85,224
+Total columns: 26
+
+Distinct proteins (TARGET_ID): 8
+Distinct compounds (COMPOUND_ID): 12,000
+
+Per-protein breakdown (rows + BINARY_LABEL counts):
+  TARGET_ID                                          rows    label=0    label=1
+  WDR91_A4D1P6_392_747                             10,653     10,521        132
+  rep_P0DTD1_5325_5925                             10,653     10,418        235
+  ...
+
+Numeric column statistics:
+  Column                         non-null             min             max            mean
+  POOL_SIZE                        85,224             463            1488           876.4
+  POS_INT_REP1                     85,224           2,103         9.2e+09         1.4e+06
+  ...
+```
+
+The summary is **defensive by design** — each section, each protein row, and each numeric column is wrapped independently, so a failure in one (e.g. a corrupted single column) only replaces that row with `(could not compute: <reason>)` and never blocks the rest. A catastrophic failure of the whole summary is captured as `(Statistics summary failed to render: <reason>)` at the bottom of the log.
+
 ## File Format Checks
 
 1. **File opens without errors** — verifies the OS can open the file for reading.

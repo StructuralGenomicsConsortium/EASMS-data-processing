@@ -176,7 +176,7 @@ def process_csv_files(data_path, masterlist_path, output_dir, providers_csv,
                     "TARGET_VALUE": "TARGET_INTENSITY_VALUE",
                     "MEAN_NONTARGET_VALUES": "NONTARGET_INTENSITY_VALUE",
                 })
-                df["LABEL"] = (df["BINARY_LABEL"] == "Y").astype(int)
+                df["LABEL"] = df["BINARY_LABEL"]
                 df.to_parquet(os.path.join(step_dirs[7], f"{base_name}.parquet"), index=False)
 
             # Steps 8 and 9 both read the Step 7 dataframe (parallel branches).
