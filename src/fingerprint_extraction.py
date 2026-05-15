@@ -24,13 +24,17 @@ def compute_molecular_properties(smiles):
         alogp = np.nan
     return mw, alogp
 
-def generate_fingerprints(smiles, fps_dict):
+def generate_fingerprints(smiles, fps_dict, fp_format="array"):
     """
     Generates fingerprints for a given SMILES string.
 
     Args:
         smiles (str): The input SMILES.
         fps_dict (dict): Dictionary of fingerprint classes.
+        fp_format (str): Storage format for each fingerprint value.
+            "array"  (default) -> numpy.ndarray (float32).
+            "string"            -> comma-separated string of values (legacy format,
+                                   what earlier pipeline versions emitted).
 
     Returns:
         dict: Dictionary with fingerprint names as keys and fingerprint data as values.
@@ -39,17 +43,26 @@ def generate_fingerprints(smiles, fps_dict):
     for fp_name, fp_class in fps_dict.items():
         try:
             fp_array = fp_class.generate_fps(smis=[smiles]).flatten()
-            fp_data[fp_name] = ','.join(map(str, fp_array))
+            if fp_format == "string":
+                fp_data[fp_name] = ','.join(map(str, fp_array))
+            else:
+                fp_data[fp_name] = fp_array.astype(np.float32)
         except Exception:
-            fp_data[fp_name] = ','.join(['nan'] * fp_class._dimension)  # Handle errors gracefully
+            if fp_format == "string":
+                fp_data[fp_name] = ','.join(['nan'] * fp_class._dimension)
+            else:
+                fp_data[fp_name] = np.full(fp_class._dimension, np.nan, dtype=np.float32)
     return fp_data
 
-def extract_fingerprints(df):
+def extract_fingerprints(df, fp_format="array"):
     """
     Extracts molecular fingerprints and molecular properties for a given DataFrame.
 
     Args:
         df (pd.DataFrame): Input DataFrame containing a "SMILES" column.
+        fp_format (str): "array" (default) stores each fingerprint as a numpy
+            float32 array; "string" stores it as a comma-separated string
+            (legacy format from earlier pipeline versions).
 
     Returns:
         pd.DataFrame: Updated DataFrame with fingerprint features and molecular properties.
@@ -77,7 +90,7 @@ def extract_fingerprints(df):
     molecular_props = []
 
     for smiles in df["SMILES"]:
-        fps = generate_fingerprints(smiles, fingerprint_classes)
+        fps = generate_fingerprints(smiles, fingerprint_classes, fp_format=fp_format)
         fingerprint_data.append(fps)
         mw, alogp = compute_molecular_properties(smiles)
         molecular_props.append({"MW": mw, "ALOGP": alogp})

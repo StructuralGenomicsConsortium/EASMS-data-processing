@@ -119,22 +119,30 @@ The library file uses the column name `formula` (lowercase, though the lookup is
 48. **TARGET_ID start < end (and both numeric)** — FAIL. Parses the two trailing digit groups as integers and verifies `start < end` for every unique TARGET_ID that matched the format.
 49. **All TARGET_IDs have the same number of compounds** — WARN. Each batch is expected to test the same library against every target, so all TARGET_IDs should appear with identical `COMPOUND_ID` counts. When counts differ the detail reports min, max, and the distinct counts observed.
 
+### `PROTEIN_NUMBER` (INT)
+
+A number associated with each protein in the batch. In a batch of 8 proteins, the values are integers `1, 2, …, 8`; in a 5-protein batch they would be `1, 2, …, 5`. The check is flexible on **N** (the batch size) but expects the distinct values to be exactly `{1, 2, …, N}`.
+
+50. **PROTEIN_NUMBER is integer (INT)** — WARN.
+51. **PROTEIN_NUMBER has no null values** — FAIL.
+52. **PROTEIN_NUMBER values form `{1, 2, ..., N}`** — WARN. PASSes when the distinct values are exactly the integers 1..N for whatever N is observed in the file. Any deviation (fewer, more, gaps, off-by-one start, non-integer values, unparseable values) WARNs and the detail message lists the actual distinct values plus the expected `{1..N}` set so you can see what's off.
+
 ### `PROTEIN_ID`
 
 `PROTEIN_ID` holds the Uniprot ID of the protein. Each `TARGET_ID` represents one protein region, so all rows sharing a `TARGET_ID` must also share the same `PROTEIN_ID`.
 
-50. **PROTEIN_ID is string (VARCHAR)** — WARN.
-51. **PROTEIN_ID has no leading/trailing whitespace** — FAIL.
-52. **PROTEIN_ID has no null values** — FAIL.
-53. **PROTEIN_ID is consistent within each TARGET_ID** — FAIL. Groups rows by `TARGET_ID` and counts distinct `PROTEIN_ID` values per group; if any group has more than one, the row group is flagged. The detail message lists up to five offending targets along with the conflicting PROTEIN_ID values seen.
+53. **PROTEIN_ID is string (VARCHAR)** — WARN.
+54. **PROTEIN_ID has no leading/trailing whitespace** — FAIL.
+55. **PROTEIN_ID has no null values** — FAIL.
+56. **PROTEIN_ID is consistent within each TARGET_ID** — FAIL. Groups rows by `TARGET_ID` and counts distinct `PROTEIN_ID` values per group; if any group has more than one, the row group is flagged. The detail message lists up to five offending targets along with the conflicting PROTEIN_ID values seen.
 
 ### `INCUBATION_VOLUME` (FLOAT)
 
 `INCUBATION_VOLUME` is the incubation volume used in the run, in µL.
 
-54. **INCUBATION_VOLUME is numeric (FLOAT)** — WARN. Accepts any numeric dtype, or string values that all coerce cleanly to numbers.
-55. **INCUBATION_VOLUME values are positive (> 0)** — FAIL. Reports both non-positive values and any cells that couldn't be parsed as numbers.
-56. **INCUBATION_VOLUME has no null values** — FAIL.
+57. **INCUBATION_VOLUME is numeric (FLOAT)** — WARN. Accepts any numeric dtype, or string values that all coerce cleanly to numbers.
+58. **INCUBATION_VOLUME values are positive (> 0)** — FAIL. Reports both non-positive values and any cells that couldn't be parsed as numbers.
+59. **INCUBATION_VOLUME has no null values** — FAIL.
 
 > **Placeholder, not yet active**: a check for "within realistic experimental range" is sketched as a commented-out block in [src/quality_check.py](src/quality_check.py) right above the active INCUBATION_VOLUME checks. When the realistic uL range is decided, set `INCUBATION_VOLUME_MIN` / `INCUBATION_VOLUME_MAX`, uncomment the function, and add it to the SECTIONS list.
 
@@ -142,105 +150,113 @@ The library file uses the column name `formula` (lowercase, though the lookup is
 
 `PROTEIN_CONC` is the protein concentration used in the run, in µM. The experimental protocol fixes it at `PROTEIN_CONC_EXPECTED = 1.0` µM (the constant lives at the top of the PROTEIN_CONC block in [src/quality_check.py](src/quality_check.py); change it if the protocol uses a different fixed value).
 
-57. **PROTEIN_CONC is numeric (FLOAT)** — WARN.
-58. **PROTEIN_CONC equals expected value (1.0)** — FAIL. Uses a small floating-point tolerance (`atol = 1e-9`) so values like `1.0000000001` still pass. The detail message reports both non-matching values and any cells that couldn't be parsed as numbers.
-59. **PROTEIN_CONC has no null values** — FAIL.
+60. **PROTEIN_CONC is numeric (FLOAT)** — WARN.
+61. **PROTEIN_CONC equals expected value (1.0)** — FAIL. Uses a small floating-point tolerance (`atol = 1e-9`) so values like `1.0000000001` still pass. The detail message reports both non-matching values and any cells that couldn't be parsed as numbers.
+62. **PROTEIN_CONC has no null values** — FAIL.
 
 > **Placeholder, not yet active**: a check for "within realistic experimental range" is sketched as a commented-out block in [src/quality_check.py](src/quality_check.py) right above the active PROTEIN_CONC checks. When the realistic µM range is decided, set `PROTEIN_CONC_MIN` / `PROTEIN_CONC_MAX`, uncomment the function, and add it to the SECTIONS list.
 
+### `COMPOUND_CONC` (FLOAT)
+
+`COMPOUND_CONC` is the compound concentration used in the run, in µM.
+
+63. **COMPOUND_CONC is numeric (FLOAT)** — WARN.
+64. **COMPOUND_CONC values are positive (> 0)** — FAIL. Reports both non-positive values and any cells that couldn't be parsed as numbers.
+65. **COMPOUND_CONC has no null values** — FAIL.
+
 ### `MS_REPRODUCABILITY` (BOOL)
 
-60. **MS_REPRODUCABILITY is boolean (BOOL)** — WARN. Verifies the pandas dtype is `bool`.
-61. **MS_REPRODUCABILITY only contains True/False** — FAIL. Set-membership against `{True, False}`. Catches accidental string `"True"`/`"False"` or numeric 0/1 values that may slip in with object-dtype columns.
-62. **MS_REPRODUCABILITY has no null values** — FAIL.
+66. **MS_REPRODUCABILITY is boolean (BOOL)** — WARN. Verifies the pandas dtype is `bool`.
+67. **MS_REPRODUCABILITY only contains True/False** — FAIL. Set-membership against `{True, False}`. Catches accidental string `"True"`/`"False"` or numeric 0/1 values that may slip in with object-dtype columns.
+68. **MS_REPRODUCABILITY has no null values** — FAIL.
 
 ### `POS_INT_REP1` / `POS_INT_REP2` / `POS_INT_REP3` (FLOAT, peak intensity per replicate)
 
 Threshold `POS_INT_REP_MIN = 0` lives at the top of the POS_INT_REP block in [src/quality_check.py](src/quality_check.py); change it once to update all three replicates.
 
-63. **POS_INT_REP1 is numeric (FLOAT)** — WARN.
-64. **POS_INT_REP1 values are >= 0** — FAIL. Reports up to five offending values plus any cells that couldn't be parsed as numbers.
-65. **POS_INT_REP1 has no null values** — FAIL.
-66. **POS_INT_REP2 is numeric (FLOAT)** — WARN.
-67. **POS_INT_REP2 values are >= 0** — FAIL.
-68. **POS_INT_REP2 has no null values** — FAIL.
-69. **POS_INT_REP3 is numeric (FLOAT)** — WARN.
-70. **POS_INT_REP3 values are >= 0** — FAIL.
-71. **POS_INT_REP3 has no null values** — FAIL.
+69. **POS_INT_REP1 is numeric (FLOAT)** — WARN.
+70. **POS_INT_REP1 values are >= 0** — FAIL. Reports up to five offending values plus any cells that couldn't be parsed as numbers.
+71. **POS_INT_REP1 has no null values** — FAIL.
+72. **POS_INT_REP2 is numeric (FLOAT)** — WARN.
+73. **POS_INT_REP2 values are >= 0** — FAIL.
+74. **POS_INT_REP2 has no null values** — FAIL.
+75. **POS_INT_REP3 is numeric (FLOAT)** — WARN.
+76. **POS_INT_REP3 values are >= 0** — FAIL.
+77. **POS_INT_REP3 has no null values** — FAIL.
 
 ### `BINARY_LABEL` (INT)
 
 `BINARY_LABEL` is `1` if significantly enriched, `0` otherwise.
 
-72. **BINARY_LABEL is integer (INT)** — WARN. Accepts integer dtype, or float dtype whose non-null values are all whole numbers.
-73. **BINARY_LABEL only contains {0, 1}** — FAIL. Set-membership against `{0, 1}`. Lists up to five offending values.
-74. **BINARY_LABEL has no null values** — FAIL.
+78. **BINARY_LABEL is integer (INT)** — WARN. Accepts integer dtype, or float dtype whose non-null values are all whole numbers.
+79. **BINARY_LABEL only contains {0, 1}** — FAIL. Set-membership against `{0, 1}`. Lists up to five offending values.
+80. **BINARY_LABEL has no null values** — FAIL.
 
 ### `LIBRARY_NAME`
 
 The library name in this column must be a single alphanumeric token (e.g. `EASMS12kV1`) — **no underscores, no spaces** — and must match one of the library filename stems found in `MasterLists/`. Each file represents one library, so all rows must share the same value.
 
-75. **LIBRARY_NAME is string (VARCHAR)** — WARN.
-76. **LIBRARY_NAME has no leading/trailing whitespace** — FAIL.
-77. **LIBRARY_NAME has no null values** — FAIL.
-78. **LIBRARY_NAME is alphanumeric (no underscores/spaces)** — FAIL. Regex: `^[A-Za-z0-9]+$`.
-79. **LIBRARY_NAME is registered** — FAIL. Each value must match a filename stem in `MasterLists/` (`MasterList_Information.xlsx` excluded). Uses the same `libraries` context as filename Check 13.
-80. **LIBRARY_NAME is consistent across all rows** — FAIL when more than one distinct value appears in the column.
+81. **LIBRARY_NAME is string (VARCHAR)** — WARN.
+82. **LIBRARY_NAME has no leading/trailing whitespace** — FAIL.
+83. **LIBRARY_NAME has no null values** — FAIL.
+84. **LIBRARY_NAME is alphanumeric (no underscores/spaces)** — FAIL. Regex: `^[A-Za-z0-9]+$`.
+85. **LIBRARY_NAME is registered** — FAIL. Each value must match a filename stem in `MasterLists/` (`MasterList_Information.xlsx` excluded). Uses the same `libraries` context as filename Check 13.
+86. **LIBRARY_NAME is consistent across all rows** — FAIL when more than one distinct value appears in the column.
 
 ### `DATA_GENERATOR_NAME`
 
 Must be exactly one of the registered data-generator names listed in `Providers.csv` under the `data_generator_name` column (e.g. `ASMS_SGC_TORONTO`, `ASMS_NUVISAN_GERMANY`, `ASMS_AZ_UK`).
 
-81. **DATA_GENERATOR_NAME is string (VARCHAR)** — WARN.
-82. **DATA_GENERATOR_NAME has no leading/trailing whitespace** — FAIL.
-83. **DATA_GENERATOR_NAME has no null values** — FAIL.
-84. **DATA_GENERATOR_NAME is registered (in Providers.csv)** — FAIL. Each value must appear in the `data_generator_name` column of `Providers.csv`.
-85. **DATA_GENERATOR_NAME is consistent across all rows** — FAIL when more than one distinct value appears (each file should encode exactly one data generator).
+87. **DATA_GENERATOR_NAME is string (VARCHAR)** — WARN.
+88. **DATA_GENERATOR_NAME has no leading/trailing whitespace** — FAIL.
+89. **DATA_GENERATOR_NAME has no null values** — FAIL.
+90. **DATA_GENERATOR_NAME is registered (in Providers.csv)** — FAIL. Each value must appear in the `data_generator_name` column of `Providers.csv`.
+91. **DATA_GENERATOR_NAME is consistent across all rows** — FAIL when more than one distinct value appears (each file should encode exactly one data generator).
 
 ### `EXPERIMENT_DATE`
 
 Date format `YYYYMMDD` (e.g. `20260513`).
 
-86. **EXPERIMENT_DATE is string (VARCHAR)** — WARN.
-87. **EXPERIMENT_DATE has no leading/trailing whitespace** — FAIL.
-88. **EXPERIMENT_DATE has no null values** — FAIL.
-89. **EXPERIMENT_DATE is valid YYYYMMDD and not in the future** — FAIL. Parses with `datetime.strptime("%Y%m%d")`; rejects bad formats *and* dates that fall after today.
+92. **EXPERIMENT_DATE is string (VARCHAR)** — WARN.
+93. **EXPERIMENT_DATE has no leading/trailing whitespace** — FAIL.
+94. **EXPERIMENT_DATE has no null values** — FAIL.
+95. **EXPERIMENT_DATE is valid YYYYMMDD and not in the future** — FAIL. Parses with `datetime.strptime("%Y%m%d")`; rejects bad formats *and* dates that fall after today.
 
 ### `CHIRAL_SELECTIVITY`
 
 Allowed values (case-sensitive): `achiral`, `chiral_selective`, `chiral_not_selective`, `chiral_undetermined`. Edit the `CHIRAL_SELECTIVITY_ALLOWED` set in [src/quality_check.py](src/quality_check.py) to change the allowed list.
 
-90. **CHIRAL_SELECTIVITY is string (VARCHAR)** — WARN.
-91. **CHIRAL_SELECTIVITY has no leading/trailing whitespace** — FAIL.
-92. **CHIRAL_SELECTIVITY has no null values** — FAIL.
-93. **CHIRAL_SELECTIVITY is one of the allowed values** — FAIL. Set-membership against `CHIRAL_SELECTIVITY_ALLOWED`. Lists up to five offending values in the log message.
+96. **CHIRAL_SELECTIVITY is string (VARCHAR)** — WARN.
+97. **CHIRAL_SELECTIVITY has no leading/trailing whitespace** — FAIL.
+98. **CHIRAL_SELECTIVITY has no null values** — FAIL.
+99. **CHIRAL_SELECTIVITY is one of the allowed values** — FAIL. Set-membership against `CHIRAL_SELECTIVITY_ALLOWED`. Lists up to five offending values in the log message.
 
 ### `MZ` (FLOAT, mass-to-charge ratio)
 
-94. **MZ is numeric (FLOAT)** — WARN.
-95. **MZ is in valid range [150, 600]** — FAIL. Inclusive on both ends; bounds are `MZ_MIN` / `MZ_MAX` at the top of the MZ block in [src/quality_check.py](src/quality_check.py).
-96. **MZ has no null values** — FAIL.
+100. **MZ is numeric (FLOAT)** — WARN.
+101. **MZ is in valid range [150, 600]** — FAIL. Inclusive on both ends; bounds are `MZ_MIN` / `MZ_MAX` at the top of the MZ block in [src/quality_check.py](src/quality_check.py).
+102. **MZ has no null values** — FAIL.
 
 ### `RT` (FLOAT, retention time in minutes)
 
-97. **RT is numeric (FLOAT)** — WARN.
-98. **RT is in valid range (0, 6) exclusive** — FAIL. **Strictly** greater than 0 and **strictly** less than 6 (so `0` and `6` themselves both fail). Bounds are `RT_MIN` / `RT_MAX` at the top of the RT block in [src/quality_check.py](src/quality_check.py).
-99. **RT has no null values** — FAIL.
+103. **RT is numeric (FLOAT)** — WARN.
+104. **RT is in valid range (0, 6) exclusive** — FAIL. **Strictly** greater than 0 and **strictly** less than 6 (so `0` and `6` themselves both fail). Bounds are `RT_MIN` / `RT_MAX` at the top of the RT block in [src/quality_check.py](src/quality_check.py).
+105. **RT has no null values** — FAIL.
 
 ### `PROTEIN_SEQ` (amino-acid sequence)
 
 The protein sequence must be longer than 6 characters. Threshold lives at `PROTEIN_SEQ_MIN_LENGTH = 6` near the top of the PROTEIN_SEQ block in [src/quality_check.py](src/quality_check.py); bump it if you want a stricter minimum.
 
-100. **PROTEIN_SEQ is string (VARCHAR)** — WARN.
-101. **PROTEIN_SEQ has no leading/trailing whitespace** — FAIL.
-102. **PROTEIN_SEQ has no null values** — FAIL.
-103. **PROTEIN_SEQ length > 6** — FAIL. Strictly greater than 6 characters (so a 7-character sequence passes, 6 fails). Lists up to five offending values.
+106. **PROTEIN_SEQ is string (VARCHAR)** — WARN.
+107. **PROTEIN_SEQ has no leading/trailing whitespace** — FAIL.
+108. **PROTEIN_SEQ has no null values** — FAIL.
+109. **PROTEIN_SEQ length > 6** — FAIL. Strictly greater than 6 characters (so a 7-character sequence passes, 6 fails). Lists up to five offending values.
 
 ### `PROTEIN_TAG` (anchoring tag — e.g. `N_his`, `C_his`)
 
-104. **PROTEIN_TAG is string (VARCHAR)** — WARN.
-105. **PROTEIN_TAG has no leading/trailing whitespace** — FAIL.
-106. **PROTEIN_TAG has no null values** — FAIL.
+110. **PROTEIN_TAG is string (VARCHAR)** — WARN.
+111. **PROTEIN_TAG has no leading/trailing whitespace** — FAIL.
+112. **PROTEIN_TAG has no null values** — FAIL.
 
 ## Providers config
 
@@ -254,7 +270,7 @@ genericrx,GenericRx Therapeutics,ASMS_GENERICRX
 ```
 
 - `acronym` is used by filename Check 11 (the `<provider>` segment of the raw CSV filename) and the `ASMS_BATCH_NAME` format check.
-- `data_generator_name` is used by column Check 84 (the `DATA_GENERATOR_NAME` column in the raw CSV must match one of these exact strings).
+- `data_generator_name` is used by column Check 90 (the `DATA_GENERATOR_NAME` column in the raw CSV must match one of these exact strings).
 
 The real `Providers.csv` is gitignored (private company info). A fake version with placeholder names lives at [Providers_sample.csv](Providers_sample.csv) — copy it into your `--input-dir` as `Providers.csv` and replace the entries with the real acronyms and data-generator names.
 

@@ -73,6 +73,17 @@ Three transformations applied together:
 
 This is the first Parquet-format step (CSV is dropped because the wide fingerprint columns make it slow and huge).
 
+#### Fingerprint storage format — `TypeOfFp`
+
+Each fingerprint column (`ECFP4`, `MACCS`, …) can be stored in one of two formats. Set the `TypeOfFp` constant near the top of the `__main__` block in [src/Main.py](src/Main.py):
+
+| `TypeOfFp` | Stored as | When to use |
+|---|---|---|
+| `"array"` *(default)* | `numpy.float32` array per row — ready to feed directly into a model | New runs. Downstream code can read the column without any string-to-array conversion. |
+| `"string"` | Comma-separated string per row (e.g. `"1,0,0,1,…"`) | Legacy format from earlier pipeline versions. Use if downstream code expects the string layout (e.g. `np.fromstring(x, sep=',', dtype=np.float32)`). |
+
+Both formats survive a Parquet round-trip; `"array"` is just one step closer to the form a model consumes.
+
 ### 8. Select full column set — [`column_selection.select_final_columns`](src/column_selection.py)
 
 Reads the Step 7 output and selects `DesiredColumns` (46 cols: all metadata + scores + labels + fingerprints). Saved as Parquet.

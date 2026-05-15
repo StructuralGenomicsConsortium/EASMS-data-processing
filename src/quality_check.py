@@ -1173,6 +1173,54 @@ def check_target_id_same_compound_count(file_path, df=None, **_):
 #   3. Register it in SECTIONS.
 
 
+# ---------- PROTEIN_NUMBER checks ----------
+
+def check_protein_number_is_int(file_path, df=None, **_):
+    """PROTEIN_NUMBER dtype is integer (INT)."""
+    return _check_column_is_int(df, "PROTEIN_NUMBER")
+
+
+def check_protein_number_no_nulls(file_path, df=None, **_):
+    """PROTEIN_NUMBER has no null values."""
+    return _check_column_no_nulls(df, "PROTEIN_NUMBER")
+
+
+def check_protein_number_consecutive_from_1(file_path, df=None, **_):
+    """Distinct PROTEIN_NUMBER values form {1, 2, ..., N} (consecutive from 1).
+
+    PASS when the distinct values are exactly the integers 1..N (any N — the
+    batch size is allowed to vary). WARN otherwise (more values than expected,
+    fewer, gaps, off-by-one start, non-integer values, etc.) and lists the
+    actual distinct values so you can see what the file contains.
+    """
+    ok, fail = _ensure_df_and_columns(df, "PROTEIN_NUMBER")
+    if not ok:
+        return False, fail
+
+    # Coerce to integers — works whether the column was stored as "1"/"2"/...
+    # (string) or 1/2/... (int / float).
+    coerced = pd.to_numeric(df["PROTEIN_NUMBER"], errors="coerce")
+    n_unparseable = int((coerced.isna() & df["PROTEIN_NUMBER"].notna()).sum())
+    non_null = coerced.dropna()
+    if non_null.empty:
+        return True, "PROTEIN_NUMBER column has no non-null values", "WARN"
+
+    distinct = sorted({int(v) for v in non_null if float(v).is_integer()})
+    non_int = int((non_null.apply(lambda v: not float(v).is_integer())).sum())
+    n = len(distinct)
+    expected = list(range(1, n + 1))
+
+    if distinct == expected and non_int == 0 and n_unparseable == 0:
+        return True, f"all {n} distinct PROTEIN_NUMBER values form {{1, 2, ..., {n}}}"
+
+    parts = [f"distinct values seen: {distinct}", f"expected {{1, 2, ..., {n}}} = {expected}"]
+    if non_int:
+        parts.append(f"{non_int:,} non-integer value(s)")
+    if n_unparseable:
+        parts.append(f"{n_unparseable:,} value(s) not parseable as numbers")
+    return True, "; ".join(parts), "WARN"
+
+
 # ---------- PROTEIN_ID checks ----------
 
 def check_protein_id_is_string(file_path, df=None, **_):
@@ -1629,6 +1677,23 @@ def check_protein_conc_no_nulls(file_path, df=None, **_):
     return _check_column_no_nulls(df, "PROTEIN_CONC")
 
 
+# ---------- COMPOUND_CONC checks ----------
+
+def check_compound_conc_is_float(file_path, df=None, **_):
+    """COMPOUND_CONC dtype is numeric (FLOAT or int)."""
+    return _check_column_is_numeric(df, "COMPOUND_CONC")
+
+
+def check_compound_conc_positive(file_path, df=None, **_):
+    """COMPOUND_CONC values are strictly positive (> 0)."""
+    return _check_column_positive(df, "COMPOUND_CONC")
+
+
+def check_compound_conc_no_nulls(file_path, df=None, **_):
+    """COMPOUND_CONC has no null values."""
+    return _check_column_no_nulls(df, "COMPOUND_CONC")
+
+
 def check_incubation_volume_is_float(file_path, df=None, **_):
     """INCUBATION_VOLUME dtype is numeric (FLOAT or int)."""
     return _check_column_is_numeric(df, "INCUBATION_VOLUME")
@@ -1791,6 +1856,10 @@ SECTIONS = [
         ("TARGET_ID matches <name>_<UniprotID>_<start>_<end>",           check_target_id_format),
         ("TARGET_ID start < end (and both numeric)",                     check_target_id_start_lt_end),
         ("All TARGET_IDs have the same number of compounds",             check_target_id_same_compound_count),
+        # PROTEIN_NUMBER
+        ("PROTEIN_NUMBER is integer (INT)",                              check_protein_number_is_int),
+        ("PROTEIN_NUMBER has no null values",                            check_protein_number_no_nulls),
+        ("PROTEIN_NUMBER values form {1, 2, ..., N}",                    check_protein_number_consecutive_from_1),
         # PROTEIN_ID
         ("PROTEIN_ID is string (VARCHAR)",                               check_protein_id_is_string),
         ("PROTEIN_ID has no leading/trailing whitespace",                check_protein_id_no_whitespace),
@@ -1804,6 +1873,10 @@ SECTIONS = [
         ("PROTEIN_CONC is numeric (FLOAT)",                              check_protein_conc_is_float),
         (f"PROTEIN_CONC equals expected value ({PROTEIN_CONC_EXPECTED})", check_protein_conc_equals_expected),
         ("PROTEIN_CONC has no null values",                              check_protein_conc_no_nulls),
+        # COMPOUND_CONC
+        ("COMPOUND_CONC is numeric (FLOAT)",                             check_compound_conc_is_float),
+        ("COMPOUND_CONC values are positive (> 0)",                      check_compound_conc_positive),
+        ("COMPOUND_CONC has no null values",                             check_compound_conc_no_nulls),
         # MS_REPRODUCABILITY
         ("MS_REPRODUCABILITY is boolean (BOOL)",                         check_ms_reproducability_is_bool),
         ("MS_REPRODUCABILITY only contains True/False",                  check_ms_reproducability_only_true_false),
