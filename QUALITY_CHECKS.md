@@ -240,61 +240,62 @@ The library name in this column must be a single alphanumeric token (e.g. `EASMS
 84. **LIBRARY_NAME is alphanumeric (no underscores/spaces)** — FAIL. Regex: `^[A-Za-z0-9]+$`.
 85. **LIBRARY_NAME is registered** — FAIL. Each value must match a filename stem in `MasterLists/` (`MasterList_Information.xlsx` excluded). Uses the same `libraries` context as filename Check 13.
 86. **LIBRARY_NAME is consistent across all rows** — FAIL when more than one distinct value appears in the column.
+87. **Library name matches filename, column, and `MasterLists/` file** — FAIL. Cross-check: the `<library>` segment of the filename, the (single) value in the `LIBRARY_NAME` column, and a file `<library>.xlsx` in `MasterLists/` must all name the same library. Complements Checks 13 / 85 / 86 (which each look at one source in isolation).
 
 ### `DATA_GENERATOR_NAME`
 
 Must be exactly one of the registered data-generator names listed in `Providers.csv` under the `data_generator_name` column (e.g. `ASMS_SGC_TORONTO`, `ASMS_NUVISAN_GERMANY`, `ASMS_AZ_UK`).
 
-87. **DATA_GENERATOR_NAME is string (VARCHAR)** — WARN.
-88. **DATA_GENERATOR_NAME has no leading/trailing whitespace** — FAIL.
-89. **DATA_GENERATOR_NAME has no null values** — FAIL.
-90. **DATA_GENERATOR_NAME is registered (in Providers.csv)** — FAIL. Each value must appear in the `data_generator_name` column of `Providers.csv`.
-91. **DATA_GENERATOR_NAME is consistent across all rows** — FAIL when more than one distinct value appears (each file should encode exactly one data generator).
+88. **DATA_GENERATOR_NAME is string (VARCHAR)** — WARN.
+89. **DATA_GENERATOR_NAME has no leading/trailing whitespace** — FAIL.
+90. **DATA_GENERATOR_NAME has no null values** — FAIL.
+91. **DATA_GENERATOR_NAME is registered (in Providers.csv)** — FAIL. Each value must appear in the `data_generator_name` column of `Providers.csv`.
+92. **DATA_GENERATOR_NAME is consistent across all rows** — FAIL when more than one distinct value appears (each file should encode exactly one data generator).
 
 ### `EXPERIMENT_DATE`
 
 Date format `YYYYMMDD` (e.g. `20260513`).
 
-92. **EXPERIMENT_DATE is string (VARCHAR)** — WARN.
-93. **EXPERIMENT_DATE has no leading/trailing whitespace** — FAIL.
-94. **EXPERIMENT_DATE has no null values** — FAIL.
-95. **EXPERIMENT_DATE is valid YYYYMMDD and not in the future** — FAIL. Parses with `datetime.strptime("%Y%m%d")`; rejects bad formats *and* dates that fall after today.
+93. **EXPERIMENT_DATE is string (VARCHAR)** — WARN.
+94. **EXPERIMENT_DATE has no leading/trailing whitespace** — FAIL.
+95. **EXPERIMENT_DATE has no null values** — FAIL.
+96. **EXPERIMENT_DATE is valid YYYYMMDD and not in the future** — FAIL. Parses with `datetime.strptime("%Y%m%d")`; rejects bad formats *and* dates that fall after today.
 
 ### `CHIRAL_SELECTIVITY`
 
 Allowed values (case-sensitive): `achiral`, `chiral_selective`, `chiral_not_selective`, `chiral_undetermined`. Edit the `CHIRAL_SELECTIVITY_ALLOWED` set in [src/quality_check.py](src/quality_check.py) to change the allowed list.
 
-96. **CHIRAL_SELECTIVITY is string (VARCHAR)** — WARN.
-97. **CHIRAL_SELECTIVITY has no leading/trailing whitespace** — FAIL.
-98. **CHIRAL_SELECTIVITY has no null values** — FAIL.
-99. **CHIRAL_SELECTIVITY is one of the allowed values** — FAIL. Set-membership against `CHIRAL_SELECTIVITY_ALLOWED`. Lists up to five offending values in the log message.
+97. **CHIRAL_SELECTIVITY is string (VARCHAR)** — WARN.
+98. **CHIRAL_SELECTIVITY has no leading/trailing whitespace** — FAIL.
+99. **CHIRAL_SELECTIVITY has no null values** — FAIL.
+100. **CHIRAL_SELECTIVITY is one of the allowed values** — FAIL. Set-membership against `CHIRAL_SELECTIVITY_ALLOWED`. Lists up to five offending values in the log message.
 
 ### `MZ` (FLOAT, mass-to-charge ratio)
 
-100. **MZ is numeric (FLOAT)** — WARN.
-101. **MZ is in valid range [150, 600]** — FAIL. Inclusive on both ends; bounds are `MZ_MIN` / `MZ_MAX` at the top of the MZ block in [src/quality_check.py](src/quality_check.py).
-102. **MZ has no null values** — FAIL.
+101. **MZ is numeric (FLOAT)** — WARN.
+102. **MZ is in valid range [150, 600]** — FAIL. Inclusive on both ends; bounds are `MZ_MIN` / `MZ_MAX` at the top of the MZ block in [src/quality_check.py](src/quality_check.py).
+103. **MZ has no null values** — FAIL.
 
 ### `RT` (FLOAT, retention time in minutes)
 
-103. **RT is numeric (FLOAT)** — WARN.
-104. **RT is in valid range (0, 6) exclusive** — FAIL. **Strictly** greater than 0 and **strictly** less than 6 (so `0` and `6` themselves both fail). Bounds are `RT_MIN` / `RT_MAX` at the top of the RT block in [src/quality_check.py](src/quality_check.py).
-105. **RT has no null values** — FAIL.
+104. **RT is numeric (FLOAT)** — WARN.
+105. **RT is in valid range (0, 6) exclusive** — FAIL. **Strictly** greater than 0 and **strictly** less than 6 (so `0` and `6` themselves both fail). Bounds are `RT_MIN` / `RT_MAX` at the top of the RT block in [src/quality_check.py](src/quality_check.py).
+106. **RT has no null values** — FAIL.
 
 ### `PROTEIN_SEQ` (amino-acid sequence)
 
 The protein sequence must be longer than 6 characters. Threshold lives at `PROTEIN_SEQ_MIN_LENGTH = 6` near the top of the PROTEIN_SEQ block in [src/quality_check.py](src/quality_check.py); bump it if you want a stricter minimum.
 
-106. **PROTEIN_SEQ is string (VARCHAR)** — WARN.
-107. **PROTEIN_SEQ has no leading/trailing whitespace** — FAIL.
-108. **PROTEIN_SEQ has no null values** — FAIL.
-109. **PROTEIN_SEQ length > 6** — FAIL. Strictly greater than 6 characters (so a 7-character sequence passes, 6 fails). Lists up to five offending values.
+107. **PROTEIN_SEQ is string (VARCHAR)** — WARN.
+108. **PROTEIN_SEQ has no leading/trailing whitespace** — FAIL.
+109. **PROTEIN_SEQ has no null values** — FAIL.
+110. **PROTEIN_SEQ length > 6** — FAIL. Strictly greater than 6 characters (so a 7-character sequence passes, 6 fails). Lists up to five offending values.
 
 ### `PROTEIN_TAG` (anchoring tag — e.g. `N_his`, `C_his`)
 
-110. **PROTEIN_TAG is string (VARCHAR)** — WARN.
-111. **PROTEIN_TAG has no leading/trailing whitespace** — FAIL.
-112. **PROTEIN_TAG has no null values** — FAIL.
+111. **PROTEIN_TAG is string (VARCHAR)** — WARN.
+112. **PROTEIN_TAG has no leading/trailing whitespace** — FAIL.
+113. **PROTEIN_TAG has no null values** — FAIL.
 
 ## Providers config
 
