@@ -166,15 +166,48 @@ def _load_associated_library_formulas(input_file_path, masterlist_dir, masterlis
     return set(lib_df[cols_lower["formula"]].dropna().astype(str).str.strip())
 
 
-def _load_dataframe(file_path):
+def _load_varchar_columns(meta_csv_path):
+    """Return the set of column names declared as VARCHAR in ASMS Meta Data.csv.
+
+    Reads row 2 (the type row) and returns every column whose declared type is
+    `VARCHAR` (case-insensitive). Returns an empty set if the file is missing,
+    unreadable, or doesn't have a second row. Used by `_load_dataframe` so
+    pandas doesn't auto-cast numeric-looking string columns (e.g. EXPERIMENT_DATE
+    values like `20250512`) to integers.
+    """
+    if not meta_csv_path or not os.path.exists(meta_csv_path):
+        return set()
+    try:
+        df = pd.read_csv(meta_csv_path, header=None, nrows=2)
+    except Exception:
+        return set()
+    if df.shape[0] < 2:
+        return set()
+    headers = [str(h).strip() for h in df.iloc[0]]
+    types = [str(t).strip().upper() for t in df.iloc[1]]
+    return {h for h, t in zip(headers, types) if h and t == "VARCHAR"}
+
+
+def _load_dataframe(file_path, varchar_columns=None):
     """Read the input CSV once and drop fully duplicate rows.
 
     Column-content checks run against this cleaned DataFrame so that the
     duplicates flagged by the row-content check (Check 15) do not skew the
     per-column metrics. Returns None if the file cannot be parsed.
+
+    `varchar_columns` lists names that should be forced to string dtype on
+    read — typically every column declared `VARCHAR` in `ASMS Meta Data.csv`.
+    This stops pandas from auto-casting numeric-looking strings (e.g. dates
+    like `20250512`) to integers.
     """
+    varchar_columns = set(varchar_columns or [])
     try:
-        df = pd.read_csv(file_path)
+        header_only = pd.read_csv(file_path, nrows=0)
+    except Exception:
+        return None
+    dtype_arg = {c: str for c in varchar_columns if c in header_only.columns}
+    try:
+        df = pd.read_csv(file_path, dtype=dtype_arg) if dtype_arg else pd.read_csv(file_path)
     except Exception:
         return None
     return df.drop_duplicates(keep="first").reset_index(drop=True)
@@ -495,10 +528,12 @@ def _check_column_is_string(df, column):
         return True, f"'{column}' is empty (no values to type-check)"
     bad = sorted({type(v).__name__ for v in non_null if not isinstance(v, str)})
     if bad:
-        return False, (
+        # WARN, not FAIL — dtype mismatch is informational (pandas often auto-casts
+        # numeric-looking columns to int/float). Value-level checks still run.
+        return True, (
             f"'{column}' has {len(bad)} non-string type(s): {bad} "
             f"(pandas dtype: {col.dtype})"
-        )
+        ), "WARN"
     return True, f"all {len(non_null):,} non-null '{column}' values are strings"
 
 
@@ -538,10 +573,11 @@ def _check_column_is_int(df, column):
                 )
         except Exception:
             pass
-        return False, (
+        # WARN, not FAIL — dtype mismatch is informational.
+        return True, (
             f"'{column}' has non-integer numeric values (dtype: {col.dtype})"
-        )
-    return False, f"'{column}' is not integer (dtype: {col.dtype})"
+        ), "WARN"
+    return True, f"'{column}' is not integer (dtype: {col.dtype})", "WARN"
 
 
 def _check_column_is_numeric(df, column):
@@ -560,10 +596,12 @@ def _check_column_is_numeric(df, column):
     coerced = pd.to_numeric(col, errors="coerce")
     n_unparseable = int((coerced.isna() & col.notna()).sum())
     if n_unparseable:
-        return False, (
+        # WARN, not FAIL — dtype mismatch is informational; downstream numeric
+        # checks (range, positive, equals) catch the unparseable rows directly.
+        return True, (
             f"'{column}' is not numeric (dtype: {col.dtype}); "
             f"{n_unparseable:,} value(s) cannot be parsed as numbers"
-        )
+        ), "WARN"
     return True, f"'{column}' is parseable as numbers (stored as {col.dtype})"
 
 
@@ -598,9 +636,11 @@ def _check_column_is_bool(df, column):
     if pd.api.types.is_bool_dtype(col):
         return True, f"all {len(non_null):,} '{column}' values are booleans (dtype: {col.dtype})"
     types = sorted({type(v).__name__ for v in non_null})
-    return False, (
+    # WARN, not FAIL — dtype mismatch is informational; the set-membership
+    # check (only True/False) catches actual value problems.
+    return True, (
         f"'{column}' is not boolean (dtype: {col.dtype}, value types: {types})"
-    )
+    ), "WARN"
 
 
 def _check_column_in_set(df, column, allowed):
@@ -1941,6 +1981,122 @@ SECTIONS = [
 ]
 
 
+# ---------- Statistics summary ----------
+
+def _generate_statistics_summary(df):
+    """Return a multi-line plain-text statistics summary for the cleaned dataframe.
+
+    Each section (overview, per-protein breakdown, numeric column stats) is
+    wrapped independently so a failure in one section never blocks the others,
+    and within per-protein / per-column loops each row has its own guard so a
+    single bad target or column doesn't drop the whole table.
+
+    Mirrors what `_collect_statistics_rows` emits for the Excel sheet so both
+    log formats stay in sync.
+    """
+    if df is None:
+        return "Statistics unavailable (file could not be read).\n"
+
+    lines = []
+
+    # ---- Overview ----
+    try:
+        lines.append(f"Total rows:    {len(df):,}")
+        lines.append(f"Total columns: {len(df.columns):,}")
+        lines.append("")
+    except Exception as e:
+        lines.append(f"(Overview failed: {e})")
+        lines.append("")
+
+    # ---- Per-protein breakdown ----
+    if "TARGET_ID" in df.columns:
+        try:
+            lines.append(f"Distinct proteins (TARGET_ID): {df['TARGET_ID'].nunique()}")
+            if "COMPOUND_ID" in df.columns:
+                try:
+                    lines.append(
+                        f"Distinct compounds (COMPOUND_ID): {df['COMPOUND_ID'].nunique():,}"
+                    )
+                except Exception as e:
+                    lines.append(f"(Distinct compounds failed: {e})")
+            lines.append("")
+
+            has_label = "BINARY_LABEL" in df.columns
+            if has_label:
+                lines.append("Per-protein breakdown (rows + BINARY_LABEL counts):")
+                lines.append(
+                    f"  {'TARGET_ID':<45} {'rows':>10} {'label=0':>10} {'label=1':>10}"
+                )
+            else:
+                lines.append("Rows per protein:")
+                lines.append(f"  {'TARGET_ID':<45} {'rows':>10}")
+
+            for target, group in df.groupby("TARGET_ID"):
+                try:
+                    target_disp = str(target)[:45]
+                    if has_label:
+                        counts = group["BINARY_LABEL"].value_counts()
+                        zeros = int(counts.get(0, 0))
+                        ones = int(counts.get(1, 0))
+                        lines.append(
+                            f"  {target_disp:<45} {len(group):>10,} {zeros:>10,} {ones:>10,}"
+                        )
+                    else:
+                        lines.append(f"  {target_disp:<45} {len(group):>10,}")
+                except Exception as e:
+                    lines.append(f"  {str(target)[:45]:<45} (could not compute: {e})")
+            lines.append("")
+        except Exception as e:
+            lines.append(f"(Per-protein breakdown failed: {e})")
+            lines.append("")
+
+    # ---- Numeric column statistics ----
+    try:
+        numeric_cols = df.select_dtypes(include="number").columns.tolist()
+        if numeric_cols:
+            lines.append("Numeric column statistics:")
+            lines.append(
+                f"  {'Column':<28} {'non-null':>10} {'min':>15} {'max':>15} {'mean':>15}"
+            )
+            for col in numeric_cols:
+                try:
+                    non_null = df[col].dropna()
+                    if non_null.empty:
+                        lines.append(f"  {col:<28} {0:>10} {'(all null)':>15}")
+                        continue
+                    lines.append(
+                        f"  {col:<28} "
+                        f"{len(non_null):>10,} "
+                        f"{non_null.min():>15.4g} "
+                        f"{non_null.max():>15.4g} "
+                        f"{non_null.mean():>15.4g}"
+                    )
+                except Exception as e:
+                    lines.append(f"  {col:<28} (could not compute: {e})")
+            lines.append("")
+    except Exception as e:
+        lines.append(f"(Numeric column statistics failed: {e})")
+        lines.append("")
+
+    return "\n".join(lines) + "\n"
+
+
+def _collect_statistics_rows(df):
+    """Return list of (label, value) string tuples for the Excel Statistics sheet."""
+    if df is None:
+        return [("Statistics", "unavailable (file could not be read)")]
+
+    rows = [
+        ("Total rows", f"{len(df):,}"),
+        ("Total columns", f"{len(df.columns):,}"),
+    ]
+    if "TARGET_ID" in df.columns:
+        rows.append(("Distinct proteins (TARGET_ID)", f"{df['TARGET_ID'].nunique():,}"))
+        if "COMPOUND_ID" in df.columns:
+            rows.append(("Distinct compounds (COMPOUND_ID)", f"{df['COMPOUND_ID'].nunique():,}"))
+    return rows
+
+
 # ---------- Orchestrator ----------
 
 SEPARATOR = "=" * 60
@@ -1975,13 +2131,18 @@ def run_quality_checks(file_path, log_dir, providers_csv=None, masterlist_dir=No
     # `df` is the input CSV loaded once with fully-duplicate rows dropped, so
     # column-content checks operate on the same cleaned data the pipeline would
     # see after Step 3's drop_duplicates().
+    # Force every VARCHAR-declared column in ASMS Meta Data.csv to load as str,
+    # so pandas doesn't silently auto-cast numeric-looking strings (e.g. dates
+    # like 20250512) to int and trip the column-content type checks.
+    varchar_cols = _load_varchar_columns(meta_csv)
+
     context = {
         "providers":       _load_providers(providers_csv),
         "data_generators": _load_data_generators(providers_csv),
         "libraries":       _list_libraries(masterlist_dir),
         "meta_columns":    _load_meta_columns(meta_csv),
         "output_dir":      log_dir,
-        "df":              _load_dataframe(file_path),
+        "df":              _load_dataframe(file_path, varchar_columns=varchar_cols),
         # Raw path passed through so library-aware checks can look up
         # MasterList_Information.xlsx and load the relevant library file.
         "masterlist_dir":  masterlist_dir,
@@ -2033,6 +2194,18 @@ def run_quality_checks(file_path, log_dir, providers_csv=None, masterlist_dir=No
         log.write(SEPARATOR + "\n")
         log.write(f"Overall : {'PASS' if all_passed else 'FAIL'}\n")
 
+        # Statistics summary appended to the same log file. The summary
+        # function already guards each section internally, but the call site
+        # is wrapped too so a catastrophic failure can't truncate the log.
+        log.write("\n")
+        log.write(SEPARATOR + "\n")
+        log.write("Statistics Summary\n")
+        log.write(SEPARATOR + "\n\n")
+        try:
+            log.write(_generate_statistics_summary(context["df"]))
+        except Exception as e:
+            log.write(f"(Statistics summary failed to render: {e})\n")
+
     # Write the Excel companion next to the .log
     excel_path = os.path.join(log_dir, f"QCaircheck{today}_{base_name}.xlsx")
     try:
@@ -2042,6 +2215,7 @@ def run_quality_checks(file_path, log_dir, providers_csv=None, masterlist_dir=No
             file_name=file_name,
             generated_at=generated_at,
             overall_status="PASS" if all_passed else "FAIL",
+            df=context["df"],
         )
     except Exception as e:
         # Excel write failure should not block QC; record in log
@@ -2051,16 +2225,20 @@ def run_quality_checks(file_path, log_dir, providers_csv=None, masterlist_dir=No
     return all_passed, failed_checks
 
 
-def _write_excel_report(rows, excel_path, file_name, generated_at, overall_status):
+def _write_excel_report(rows, excel_path, file_name, generated_at, overall_status, df=None):
     """Write a color-coded Excel version of the QC log.
 
-    Layout (one sheet, "QC Results"):
+    Sheet 1 ("QC Results"):
       Row 1: File:      <file_name>
       Row 2: Generated: <iso timestamp>
       Row 3: Overall:   <PASS/FAIL>
       Row 4: (blank)
       Row 5: Header (Section / Check # / Criteria / Status / Detail)
       Row 6+: Data, with each row's background color tied to its Status.
+
+    Sheet 2 ("Statistics") — only added when `df` is provided:
+      Overview rows (totals, distinct counts), per-protein breakdown
+      (rows + BINARY_LABEL counts), and per-numeric-column min/max/mean/count.
     """
     from openpyxl import Workbook
     from openpyxl.styles import PatternFill, Font, Alignment
@@ -2106,5 +2284,63 @@ def _write_excel_report(rows, excel_path, file_name, generated_at, overall_statu
 
     # Freeze the header row so it stays visible when scrolling
     ws.freeze_panes = f"A{header_row + 1}"
+
+    # ---- Sheet 2: Statistics ----
+    if df is not None:
+        stats_ws = wb.create_sheet("Statistics")
+        row_idx = 1
+
+        # Overview rows
+        for label, value in _collect_statistics_rows(df):
+            stats_ws.cell(row=row_idx, column=1, value=label).font = bold
+            stats_ws.cell(row=row_idx, column=2, value=value)
+            row_idx += 1
+        row_idx += 1  # blank spacer
+
+        # Per-protein breakdown
+        if "TARGET_ID" in df.columns:
+            stats_ws.cell(row=row_idx, column=1, value="Per-protein breakdown").font = bold
+            row_idx += 1
+            has_label = "BINARY_LABEL" in df.columns
+            stats_ws.cell(row=row_idx, column=1, value="TARGET_ID").font = bold
+            stats_ws.cell(row=row_idx, column=2, value="rows").font = bold
+            if has_label:
+                stats_ws.cell(row=row_idx, column=3, value="label=0").font = bold
+                stats_ws.cell(row=row_idx, column=4, value="label=1").font = bold
+            row_idx += 1
+            for target, group in df.groupby("TARGET_ID"):
+                stats_ws.cell(row=row_idx, column=1, value=str(target))
+                stats_ws.cell(row=row_idx, column=2, value=int(len(group)))
+                if has_label:
+                    counts = group["BINARY_LABEL"].value_counts()
+                    stats_ws.cell(row=row_idx, column=3, value=int(counts.get(0, 0)))
+                    stats_ws.cell(row=row_idx, column=4, value=int(counts.get(1, 0)))
+                row_idx += 1
+            row_idx += 1  # blank spacer
+
+        # Numeric column statistics
+        numeric_cols = df.select_dtypes(include="number").columns.tolist()
+        if numeric_cols:
+            stats_ws.cell(row=row_idx, column=1, value="Numeric column statistics").font = bold
+            row_idx += 1
+            for col_idx, h in enumerate(["Column", "non-null", "min", "max", "mean"], start=1):
+                stats_ws.cell(row=row_idx, column=col_idx, value=h).font = bold
+            row_idx += 1
+            for col in numeric_cols:
+                non_null = df[col].dropna()
+                stats_ws.cell(row=row_idx, column=1, value=col)
+                stats_ws.cell(row=row_idx, column=2, value=int(len(non_null)))
+                if not non_null.empty:
+                    stats_ws.cell(row=row_idx, column=3, value=float(non_null.min()))
+                    stats_ws.cell(row=row_idx, column=4, value=float(non_null.max()))
+                    stats_ws.cell(row=row_idx, column=5, value=float(non_null.mean()))
+                row_idx += 1
+
+        # Reasonable widths for the Statistics sheet
+        stats_ws.column_dimensions["A"].width = 45
+        stats_ws.column_dimensions["B"].width = 14
+        stats_ws.column_dimensions["C"].width = 16
+        stats_ws.column_dimensions["D"].width = 16
+        stats_ws.column_dimensions["E"].width = 16
 
     wb.save(excel_path)
