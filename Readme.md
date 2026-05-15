@@ -16,8 +16,9 @@ This repository contains a Python-based data curation pipeline for processing Af
 ## Documentation
 
 - **[USAGE.md](USAGE.md)** — environment setup, run commands, `--start-from` / `--end-at` flags.
-- **[QUALITY_CHECKS.md](QUALITY_CHECKS.md)** — Step 0 (QC): every check, severity, and report file produced.
+- **[QUALITY_CHECKS.md](QUALITY_CHECKS.md)** — Step 0 (input QC): every check, severity, and report file produced.
 - **[PIPELINE.md](PIPELINE.md)** — Steps 1–9 (data processing): what each step does, output layout, resuming.
+- **[POST_QC.md](POST_QC.md)** — Post-pipeline QC: 23 checks that run after Step 8 to catch regressions in the pipeline's own output.
 
 ## Requirements
 
