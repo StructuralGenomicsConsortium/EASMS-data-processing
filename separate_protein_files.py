@@ -25,7 +25,7 @@ def split_protein_data(file_path, subfolder):
     df = pd.read_csv(file_path)
 
     # Ensure necessary columns exist
-    required_columns = {"PROTEIN_NUMBER", "ASMS_BATCH_NAME", "TARGET_ID"}
+    required_columns = {"PROTEIN_NUMBER", "ASMS_BATCH_NUM", "TARGET_ID"}
     if not required_columns.issubset(df.columns):
         raise ValueError(f"Missing required columns: {required_columns - set(df.columns)}")
 
@@ -34,10 +34,12 @@ def split_protein_data(file_path, subfolder):
 
     # Group by PROTEIN_NUMBER and process each group
     for protein_number, group_df in df.groupby("TARGET_ID"):
+        # Extract batch number (NUM) and protein name
+        batch_number = group_df["ASMS_BATCH_NUM"].iloc[0]  # Take the first batch number
         protein_name = group_df["TARGET_ID"].iloc[0]  # Take the first protein name
 
         # Construct the filename
-        file_name = f"{protein_name}.csv"
+        file_name = f"{protein_name}_AsmBatchNumber{batch_number}.csv"
 
         # Define the file path
         output_path = os.path.join(subfolder, file_name)
