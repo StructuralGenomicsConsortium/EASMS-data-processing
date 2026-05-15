@@ -21,6 +21,7 @@ from add_negatives import add_negative_samples_from_masterlist
 from fingerprint_extraction import extract_fingerprints
 from column_selection import select_final_columns
 from quality_check import run_quality_checks
+from post_quality_check import run_post_quality_checks
 
 STEP_FOLDERS = {
     1: "Step1_Separated",
@@ -194,6 +195,17 @@ def process_csv_files(data_path, masterlist_path, output_dir, providers_csv,
                 os.makedirs(step_dirs[9], exist_ok=True)
                 df_key = select_final_columns(df, DesiredColumns2)
                 df_key.to_parquet(os.path.join(step_dirs[9], f"{base_name}.parquet"), index=False)
+
+        # ---- Post-pipeline QC ----
+        # Runs once per input CSV, after every per-target Step 8 Parquet has
+        # been written. Validates value sets, ranges, non-negativity, and
+        # fingerprint lengths on the concatenated Step 8 output.
+        if end_at >= 8:
+            run_post_quality_checks(
+                parquet_dir=step_dirs[8],
+                log_dir=processed_data_dir,
+                csv_basename=csv_basename,
+            )
 
 
 def main(data_path, masterlist_path, output_dir, providers_csv,

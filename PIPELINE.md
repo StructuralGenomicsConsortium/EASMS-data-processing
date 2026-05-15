@@ -92,6 +92,29 @@ Reads the Step 7 output and selects `DesiredColumns` (46 cols: all metadata + sc
 
 Reads the **same Step 7 output** (parallel branch — *not* downstream of Step 8) and selects `DesiredColumns2` (19 cols: IDs, target info, scores, label, MW, ALOGP, fingerprints). Saved as Parquet.
 
+### Post-pipeline QC — [`post_quality_check.run_post_quality_checks`](src/post_quality_check.py)
+
+After all per-target Parquet files have been written, a lightweight QC pass runs once per input CSV against the concatenated Step 8 output. Its job is to catch regressions in pipeline-produced columns (label values, score ranges, fingerprint lengths) — not to re-validate the raw input.
+
+**Outputs**, written next to the input-QC logs in `ProcessedData_<csv_basename>/`:
+
+- `PostQClog_<YYYYMMDD>_<csv_basename>.log` — plain text, same shape as the input-QC log (Sections → numbered checks → Overall → Statistics Summary).
+- `PostQClog_<YYYYMMDD>_<csv_basename>.xlsx` — color-coded Excel with a `Statistics` tab.
+
+**Checks** (organized into five sections):
+
+- **Label Checks** — `LABEL` ∈ `{0, 1}`; `AIRCHECK_LABEL` ∈ `{-2, -1, 0, 1, 2, 3, 4}`.
+- **Score Range Checks** — `PVALUE` in `[0, 1]`; `TARGET_INTENSITY_VALUE`, `NONTARGET_INTENSITY_VALUE`, `SELECTIVE_VALUE`, `NTC_VALUE`, `ENRICHMENT`, `EASMS_ENRICHMENT`, `SELECTIVE_ENRICHMENT` all `>= 0`.
+- **Molecular Property Checks** — `MW > 0` (FAIL); `ALOGP` in `[-5, 10]` (WARN — outliers can be legitimate).
+- **Flag Column Checks** — `MassSpec_Detected` and `HAD_DUPLICATE_INTENSITY` only contain `{Y, N}`.
+- **Fingerprint Length Checks** — `ECFP4`, `ECFP6`, `FCFP4`, `FCFP6`, `RDK`, `AVALON`, `TOPTOR`, `ATOMPAIR` length `2048`; `MACCS` length `167`. Works on either the array or comma-string fingerprint formats.
+
+By design this stage **does not recompute** any of the score formulas — that would be the pipeline grading itself with the same answer key. Recomputation-style invariants are intentionally out of scope; for that level of verification, see Step 2 in this document.
+
+Tuning constants (e.g. `AIRCHECK_LABEL_VALUES`, `ALOGP_MIN`/`MAX`, `FP_EXPECTED_LENGTHS`) live at the top of [src/post_quality_check.py](src/post_quality_check.py).
+
+Post-pipeline QC is **best-effort** — it never blocks the pipeline. If the Step 8 directory is missing or empty (e.g. you ran with `--end-at 7`), it writes a one-line "skipped" log and returns. It only runs when `--end-at >= 8`.
+
 ## Running a Subset of Steps
 
 Use `--start-from N` and `--end-at N` to resume from or stop at a specific step. Earlier steps that have already been saved are loaded from disk; later steps are skipped.
@@ -117,6 +140,8 @@ For each input CSV, the pipeline creates one `ProcessedData_<csv_basename>/` fol
 ProcessedData_<csv_basename>/
 ├── QCaircheck<YYYYMMDD>_<csv_basename>.log    # step 0 plain-text log (date the check was run)
 ├── QCaircheck<YYYYMMDD>_<csv_basename>.xlsx   # step 0 same data in Excel (color-coded)
+├── PostQClog_<YYYYMMDD>_<csv_basename>.log    # post-pipeline QC plain-text log
+├── PostQClog_<YYYYMMDD>_<csv_basename>.xlsx   # post-pipeline QC Excel (color-coded)
 ├── Step1_Separated/             # step 1 — split by target           (CSV)
 │   └── <target>.csv
 ├── Step2_WithScores/            # step 2 — score columns added       (CSV)

@@ -1499,6 +1499,38 @@ def check_library_name_registered(file_path, df=None, libraries=None, **_):
     return False, f"unregistered LIBRARY_NAME value(s): {preview}{suffix}"
 
 
+def check_library_name_matches_filename_and_file(file_path, df=None, libraries=None, **_):
+    """The library name in the filename, the LIBRARY_NAME column, and a file
+    in MasterLists/ all agree.
+
+    Cross-check that complements Checks 13 / 79 / 80 — those each look at one
+    of the three sources in isolation; this one verifies all three name the
+    same library.
+    """
+    ok, fail = _ensure_df_and_columns(df, "LIBRARY_NAME")
+    if not ok:
+        return False, fail
+    match = _parse_filename(file_path)
+    if not match:
+        return False, "filename did not parse; cannot extract library segment"
+    filename_lib = match.group("library")
+    column_libs = df["LIBRARY_NAME"].dropna().unique()
+    if len(column_libs) == 0:
+        return False, "LIBRARY_NAME column has no values"
+    column_lib = str(column_libs[0]).strip()
+    if filename_lib != column_lib:
+        return False, (
+            f"filename library '{filename_lib}' != LIBRARY_NAME column '{column_lib}'"
+        )
+    if libraries is None:
+        return False, "libraries list unavailable (MasterLists/ not found)"
+    if filename_lib not in libraries:
+        return False, f"no '{filename_lib}.xlsx' in MasterLists/"
+    return True, (
+        f"library '{filename_lib}' matches across filename, LIBRARY_NAME column, and MasterLists/"
+    )
+
+
 def check_library_name_consistent(file_path, df=None, **_):
     """All rows share the same LIBRARY_NAME (one file = one library)."""
     ok, fail = _ensure_df_and_columns(df, "LIBRARY_NAME")
@@ -1944,6 +1976,7 @@ SECTIONS = [
         ("LIBRARY_NAME is alphanumeric (no underscores/spaces)",         check_library_name_format),
         ("LIBRARY_NAME is registered",                                   check_library_name_registered),
         ("LIBRARY_NAME is consistent across all rows",                   check_library_name_consistent),
+        ("Library name matches filename, column, and MasterLists/ file", check_library_name_matches_filename_and_file),
         # DATA_GENERATOR_NAME
         ("DATA_GENERATOR_NAME is string (VARCHAR)",                      check_data_generator_name_is_string),
         ("DATA_GENERATOR_NAME has no leading/trailing whitespace",       check_data_generator_name_no_whitespace),
