@@ -56,7 +56,7 @@ def _step_input_files(start_from, step_dirs, scored_files):
 
 
 def process_csv_files(data_path, masterlist_path, output_dir, providers_csv,
-                      MasterList_Information, DesiredColumns, DesiredColumns2,
+                      DesiredColumns, DesiredColumns2,
                       start_from=0, end_at=9, meta_csv=None, fp_format="array"):
     """Processes all CSV files through data curation steps 1..9.
 
@@ -160,7 +160,7 @@ def process_csv_files(data_path, masterlist_path, output_dir, providers_csv,
             # Step 5: add negative samples
             if start_from <= 5 and end_at >= 5:
                 os.makedirs(step_dirs[5], exist_ok=True)
-                df = add_negative_samples_from_masterlist(df, file_name, masterlist_path, MasterList_Information)
+                df = add_negative_samples_from_masterlist(df, file_name, masterlist_path)
                 df.to_csv(os.path.join(step_dirs[5], f"{base_name}.csv"), index=False)
 
             # Step 6: generate ML labels (last CSV step)
@@ -209,11 +209,11 @@ def process_csv_files(data_path, masterlist_path, output_dir, providers_csv,
 
 
 def main(data_path, masterlist_path, output_dir, providers_csv,
-         MasterList_Information, DesiredColumns, DesiredColumns2,
+         DesiredColumns, DesiredColumns2,
          start_from=0, end_at=9, meta_csv=None, fp_format="array"):
     """Main function to execute the full data curation pipeline."""
     process_csv_files(data_path, masterlist_path, output_dir, providers_csv,
-                      MasterList_Information, DesiredColumns, DesiredColumns2,
+                      DesiredColumns, DesiredColumns2,
                       start_from=start_from, end_at=end_at, meta_csv=meta_csv,
                       fp_format=fp_format)
 
@@ -255,7 +255,6 @@ if __name__ == "__main__":
     masterlist_path = os.path.join(input_dir, "MasterLists")
     providers_csv = os.path.join(input_dir, "Providers.csv")
     meta_csv = os.path.join(input_dir, "ASMS Meta Data.csv")
-    MasterList_Information = os.path.join(masterlist_path, "MasterList_Information.xlsx")
 
     # How fingerprint values are stored in the Step 7+ output columns:
     #   "array"  (default) -> numpy float32 arrays, ready to use directly.
@@ -331,6 +330,6 @@ if __name__ == "__main__":
      'ATOMPAIR']
 
     main(data_path, masterlist_path, output_dir, providers_csv,
-         MasterList_Information, DesiredColumns, DesiredColumns2,
+         DesiredColumns, DesiredColumns2,
          start_from=args.start_from, end_at=args.end_at, meta_csv=meta_csv,
          fp_format=TypeOfFp)
