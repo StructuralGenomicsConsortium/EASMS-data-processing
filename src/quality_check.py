@@ -84,8 +84,9 @@ def _load_data_generators(providers_csv_path):
 
 
 def _list_libraries(masterlist_dir):
-    """Return library names (filename stems) from MasterLists/, excluding the
-    MasterList_Information mapping file. None if directory is missing.
+    """Return library names (filename stems) from MasterLists/. The legacy
+    MasterList_Information.xlsx mapping file is excluded so it isn't mistaken
+    for a library if still present. None if directory is missing.
     """
     if not masterlist_dir or not os.path.isdir(masterlist_dir):
         return None
@@ -111,29 +112,34 @@ def _split_smiles(value):
     return [p.strip() for p in str(value).split(";") if p.strip()]
 
 
-def _load_associated_library_df(input_file_path, masterlist_dir, masterlist_info_path):
-    """Resolve the master list file for `input_file_path` via MasterList_Information
-    and return its full DataFrame, or None on any failure (missing folder,
-    missing mapping file, mapping row absent, library file absent).
+def _resolve_library_name(df):
+    """Return the library name for this raw CSV, taken from the LIBRARY_NAME
+    column. One file = one library, so the first non-null value is used.
+    Returns None if the column is missing or empty.
+    """
+    if df is None or "LIBRARY_NAME" not in df.columns:
+        return None
+    non_null = df["LIBRARY_NAME"].dropna()
+    if non_null.empty:
+        return None
+    return str(non_null.iloc[0]).strip()
 
-    Column existence is checked by the callers since different checks need
-    different columns.
+
+def _load_associated_library_df(df, masterlist_dir):
+    """Load the master list file for this raw CSV and return its full DataFrame,
+    or None on any failure (missing folder, no resolvable LIBRARY_NAME, library
+    file absent).
+
+    The library is resolved from the LIBRARY_NAME column and loaded from
+    `<library>.xlsx` or `<library>.csv` in `masterlist_dir` (xlsx wins if both
+    exist). Column existence is checked by the callers since different checks
+    need different columns.
     """
     if not (masterlist_dir and os.path.isdir(masterlist_dir)):
         return None
-    if not (masterlist_info_path and os.path.exists(masterlist_info_path)):
+    lib_name = _resolve_library_name(df)
+    if not lib_name:
         return None
-    try:
-        info = pd.read_excel(masterlist_info_path)
-    except Exception:
-        return None
-    if not {"FileName", "MaterListName"}.issubset(info.columns):
-        return None
-    file_name = os.path.basename(input_file_path)
-    match = info.loc[info["FileName"] == file_name, "MaterListName"]
-    if match.empty:
-        return None
-    lib_name = match.values[0]
     # Accept either a .xlsx or .csv library file (xlsx wins if both exist).
     lib_path = None
     for ext in (".xlsx", ".csv"):
@@ -151,21 +157,21 @@ def _load_associated_library_df(input_file_path, masterlist_dir, masterlist_info
         return None
 
 
-def _load_associated_library_smiles(input_file_path, masterlist_dir, masterlist_info_path):
+def _load_associated_library_smiles(df, masterlist_dir):
     """Returns a set of SMILES from the associated library, or None."""
-    lib_df = _load_associated_library_df(input_file_path, masterlist_dir, masterlist_info_path)
+    lib_df = _load_associated_library_df(df, masterlist_dir)
     if lib_df is None or "SMILES" not in lib_df.columns:
         return None
     return set(lib_df["SMILES"].dropna().astype(str))
 
 
-def _load_associated_library_formulas(input_file_path, masterlist_dir, masterlist_info_path):
+def _load_associated_library_formulas(df, masterlist_dir):
     """Returns the set of formula strings from the associated library, or None.
 
     The library's formula column is matched case-insensitively (`formula`,
     `Formula`, `FORMULA` all work). Values are trimmed.
     """
-    lib_df = _load_associated_library_df(input_file_path, masterlist_dir, masterlist_info_path)
+    lib_df = _load_associated_library_df(df, masterlist_dir)
     if lib_df is None:
         return None
     cols_lower = {c.lower(): c for c in lib_df.columns}
@@ -919,8 +925,8 @@ def check_smiles_valid(file_path, df=None, output_dir=None, **_):
 
 
 def check_smiles_in_library(file_path, df=None, masterlist_dir=None, output_dir=None, **_):
-    """Every SMILES in the input is present in the master list referenced by
-    `MasterList_Information.xlsx` for this raw CSV.
+    """Every SMILES in the input is present in the master list for this raw CSV,
+    resolved from the LIBRARY_NAME column.
 
     Isomer groups are split on ';' and each component is checked against the
     library individually. WARN (not FAIL): a SMILES that's not in the
@@ -933,12 +939,11 @@ def check_smiles_in_library(file_path, df=None, masterlist_dir=None, output_dir=
     if not masterlist_dir:
         return False, "masterlist_dir not provided; cannot check library membership"
 
-    info_path = os.path.join(masterlist_dir, "MasterList_Information.xlsx")
-    library_smiles = _load_associated_library_smiles(file_path, masterlist_dir, info_path)
+    library_smiles = _load_associated_library_smiles(df, masterlist_dir)
     if library_smiles is None:
         return False, (
-            "could not load associated library (check MasterList_Information.xlsx "
-            "FileName/MaterListName mapping and the referenced library file)"
+            "could not load associated library (check that LIBRARY_NAME names a "
+            "<library>.xlsx/.csv file in MasterLists/ with a SMILES column)"
         )
 
     smiles_col = df["SMILES"]
@@ -1048,13 +1053,12 @@ def check_compound_formula_in_library(file_path, df=None, masterlist_dir=None,
     if not masterlist_dir:
         return False, "masterlist_dir not provided; cannot check formula library membership"
 
-    info_path = os.path.join(masterlist_dir, "MasterList_Information.xlsx")
-    library_formulas = _load_associated_library_formulas(file_path, masterlist_dir, info_path)
+    library_formulas = _load_associated_library_formulas(df, masterlist_dir)
     if library_formulas is None:
         return False, (
             "could not load associated library or its 'formula' column "
-            "(check MasterList_Information.xlsx and that the library file "
-            "has a `formula` column)"
+            "(check that LIBRARY_NAME names a <library>.xlsx/.csv file in "
+            "MasterLists/ with a `formula` column)"
         )
 
     missing_rows = []   # list of (row_idx, first_missing_part)
@@ -2184,8 +2188,8 @@ def run_quality_checks(file_path, log_dir, providers_csv=None, masterlist_dir=No
         "meta_columns":    _load_meta_columns(meta_csv),
         "output_dir":      log_dir,
         "df":              _load_dataframe(file_path, varchar_columns=varchar_cols),
-        # Raw path passed through so library-aware checks can look up
-        # MasterList_Information.xlsx and load the relevant library file.
+        # Folder passed through so library-aware checks can load the library
+        # file named by the LIBRARY_NAME column.
         "masterlist_dir":  masterlist_dir,
     }
 

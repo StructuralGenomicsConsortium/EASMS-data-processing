@@ -2,36 +2,36 @@ import os
 import pandas as pd
 import numpy as np
 
-def add_negative_samples_from_masterlist(df, file_name, masterlist_path, MasterList_Information):
+def add_negative_samples_from_masterlist(df, file_name, masterlist_path):
     """
     Adds negative samples from the master list that are not present in the input DataFrame.
     Copies specific additional columns from the master list.
 
+    The master list (library) is resolved directly from the LIBRARY_NAME column
+    of the input data, then loaded from `<library>.xlsx` or `<library>.csv` in
+    `masterlist_path`. No separate mapping file is needed.
+
     Args:
         df (pd.DataFrame): The input DataFrame.
-        file_name (str): The name of the processed file to match with the master list.
+        file_name (str): The name of the processed file (used only for log messages).
         masterlist_path (str): The directory containing master list files.
-        MasterList_Information (str): The path to the Excel file mapping file names to master lists.
 
     Returns:
         pd.DataFrame: Updated DataFrame with added negative samples.
     """
 
-    # Load the master list mapping file
-    masterlist_info = pd.read_excel(MasterList_Information)
-
-    # Ensure the necessary columns exist
-    if not {"FileName", "MaterListName"}.issubset(masterlist_info.columns):
-        raise ValueError("MasterList_Information.xlsx must contain 'FileName' and 'MaterListName' columns")
-
-    # Get the corresponding master list name for the given file
-    masterlist_name = masterlist_info.loc[masterlist_info["FileName"] == file_name, "MaterListName"]
-
-    if masterlist_name.empty:
-        print(f"Warning: No master list found for {file_name}. Skipping negative sample addition.")
+    # Resolve the library name straight from the LIBRARY_NAME column
+    # (one file = one library).
+    if "LIBRARY_NAME" not in df.columns:
+        print(f"Warning: No LIBRARY_NAME column in {file_name}. Skipping negative sample addition.")
         return df
 
-    masterlist_name = masterlist_name.values[0]  # Extract string value
+    library_values = df["LIBRARY_NAME"].dropna()
+    if library_values.empty:
+        print(f"Warning: LIBRARY_NAME column is empty in {file_name}. Skipping negative sample addition.")
+        return df
+
+    masterlist_name = str(library_values.iloc[0]).strip()
 
     # Resolve the master list file, accepting either .xlsx or .csv (xlsx wins
     # if both exist).
