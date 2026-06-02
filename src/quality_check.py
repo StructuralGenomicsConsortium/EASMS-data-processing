@@ -134,10 +134,18 @@ def _load_associated_library_df(input_file_path, masterlist_dir, masterlist_info
     if match.empty:
         return None
     lib_name = match.values[0]
-    lib_path = os.path.join(masterlist_dir, f"{lib_name}.xlsx")
-    if not os.path.exists(lib_path):
+    # Accept either a .xlsx or .csv library file (xlsx wins if both exist).
+    lib_path = None
+    for ext in (".xlsx", ".csv"):
+        candidate = os.path.join(masterlist_dir, f"{lib_name}{ext}")
+        if os.path.exists(candidate):
+            lib_path = candidate
+            break
+    if lib_path is None:
         return None
     try:
+        if lib_path.lower().endswith(".csv"):
+            return pd.read_csv(lib_path)
         return pd.read_excel(lib_path)
     except Exception:
         return None
@@ -1318,7 +1326,7 @@ PROTEIN_CONC_EXPECTED = 1.0
 # Then register it in SECTIONS alongside the other PROTEIN_CONC checks.
 
 
-# ---------- MS_REPRODUCABILITY checks ----------
+# ---------- MS_REPRODUCIBILITY checks ----------
 
 # ---------- PROTEIN_TAG checks ----------
 
@@ -1426,20 +1434,20 @@ RT_MAX = 6
 
 def check_rt_is_float(file_path, df=None, **_):
     """RT dtype is numeric (FLOAT or int)."""
-    return _check_column_is_numeric(df, "RT")
+    return _check_column_is_numeric(df, "RT (min)")
 
 
 def check_rt_in_range(file_path, df=None, **_):
     """RT values are strictly between RT_MIN and RT_MAX (exclusive on both ends)."""
     return _check_column_in_range(
-        df, "RT", RT_MIN, RT_MAX,
+        df, "RT (min)", RT_MIN, RT_MAX,
         lo_inclusive=False, hi_inclusive=False,
     )
 
 
 def check_rt_no_nulls(file_path, df=None, **_):
     """RT has no null values."""
-    return _check_column_no_nulls(df, "RT")
+    return _check_column_no_nulls(df, "RT (min)")
 
 
 # ---------- LIBRARY_NAME checks ----------
@@ -1525,7 +1533,7 @@ def check_library_name_matches_filename_and_file(file_path, df=None, libraries=N
     if libraries is None:
         return False, "libraries list unavailable (MasterLists/ not found)"
     if filename_lib not in libraries:
-        return False, f"no '{filename_lib}.xlsx' in MasterLists/"
+        return False, f"no '{filename_lib}' (.xlsx or .csv) in MasterLists/"
     return True, (
         f"library '{filename_lib}' matches across filename, LIBRARY_NAME column, and MasterLists/"
     )
@@ -1651,18 +1659,18 @@ def check_experiment_date_valid_and_not_future(file_path, df=None, **_):
 
 
 def check_ms_reproducability_is_bool(file_path, df=None, **_):
-    """MS_REPRODUCABILITY dtype is boolean."""
-    return _check_column_is_bool(df, "MS_REPRODUCABILITY")
+    """MS_REPRODUCIBILITY dtype is boolean."""
+    return _check_column_is_bool(df, "MS_REPRODUCIBILITY")
 
 
 def check_ms_reproducability_only_true_false(file_path, df=None, **_):
-    """MS_REPRODUCABILITY only contains True or False."""
-    return _check_column_in_set(df, "MS_REPRODUCABILITY", {True, False})
+    """MS_REPRODUCIBILITY only contains True or False."""
+    return _check_column_in_set(df, "MS_REPRODUCIBILITY", {True, False})
 
 
 def check_ms_reproducability_no_nulls(file_path, df=None, **_):
-    """MS_REPRODUCABILITY has no null values."""
-    return _check_column_no_nulls(df, "MS_REPRODUCABILITY")
+    """MS_REPRODUCIBILITY has no null values."""
+    return _check_column_no_nulls(df, "MS_REPRODUCIBILITY")
 
 
 # ---------- POS_INT_REP1 / REP2 / REP3 checks ----------
@@ -1736,49 +1744,49 @@ def check_binary_label_no_nulls(file_path, df=None, **_):
 
 def check_protein_conc_is_float(file_path, df=None, **_):
     """PROTEIN_CONC dtype is numeric (FLOAT or int)."""
-    return _check_column_is_numeric(df, "PROTEIN_CONC")
+    return _check_column_is_numeric(df, "PROTEIN_CONC (uM)")
 
 
 def check_protein_conc_equals_expected(file_path, df=None, **_):
     """PROTEIN_CONC values equal the expected concentration (PROTEIN_CONC_EXPECTED)."""
-    return _check_column_equals(df, "PROTEIN_CONC", PROTEIN_CONC_EXPECTED)
+    return _check_column_equals(df, "PROTEIN_CONC (uM)", PROTEIN_CONC_EXPECTED)
 
 
 def check_protein_conc_no_nulls(file_path, df=None, **_):
     """PROTEIN_CONC has no null values."""
-    return _check_column_no_nulls(df, "PROTEIN_CONC")
+    return _check_column_no_nulls(df, "PROTEIN_CONC (uM)")
 
 
 # ---------- COMPOUND_CONC checks ----------
 
 def check_compound_conc_is_float(file_path, df=None, **_):
     """COMPOUND_CONC dtype is numeric (FLOAT or int)."""
-    return _check_column_is_numeric(df, "COMPOUND_CONC")
+    return _check_column_is_numeric(df, "COMPOUND_CONC (uM)")
 
 
 def check_compound_conc_positive(file_path, df=None, **_):
     """COMPOUND_CONC values are strictly positive (> 0)."""
-    return _check_column_positive(df, "COMPOUND_CONC")
+    return _check_column_positive(df, "COMPOUND_CONC (uM)")
 
 
 def check_compound_conc_no_nulls(file_path, df=None, **_):
     """COMPOUND_CONC has no null values."""
-    return _check_column_no_nulls(df, "COMPOUND_CONC")
+    return _check_column_no_nulls(df, "COMPOUND_CONC (uM)")
 
 
 def check_incubation_volume_is_float(file_path, df=None, **_):
     """INCUBATION_VOLUME dtype is numeric (FLOAT or int)."""
-    return _check_column_is_numeric(df, "INCUBATION_VOLUME")
+    return _check_column_is_numeric(df, "INCUBATION_VOLUME (uL)")
 
 
 def check_incubation_volume_positive(file_path, df=None, **_):
     """INCUBATION_VOLUME values are strictly positive (> 0)."""
-    return _check_column_positive(df, "INCUBATION_VOLUME")
+    return _check_column_positive(df, "INCUBATION_VOLUME (uL)")
 
 
 def check_incubation_volume_no_nulls(file_path, df=None, **_):
     """INCUBATION_VOLUME has no null values."""
-    return _check_column_no_nulls(df, "INCUBATION_VOLUME")
+    return _check_column_no_nulls(df, "INCUBATION_VOLUME (uL)")
 
 
 def check_protein_id_consistent_per_target(file_path, df=None, **_):
@@ -1949,10 +1957,10 @@ SECTIONS = [
         ("COMPOUND_CONC is numeric (FLOAT)",                             check_compound_conc_is_float),
         ("COMPOUND_CONC values are positive (> 0)",                      check_compound_conc_positive),
         ("COMPOUND_CONC has no null values",                             check_compound_conc_no_nulls),
-        # MS_REPRODUCABILITY
-        ("MS_REPRODUCABILITY is boolean (BOOL)",                         check_ms_reproducability_is_bool),
-        ("MS_REPRODUCABILITY only contains True/False",                  check_ms_reproducability_only_true_false),
-        ("MS_REPRODUCABILITY has no null values",                        check_ms_reproducability_no_nulls),
+        # MS_REPRODUCIBILITY
+        ("MS_REPRODUCIBILITY is boolean (BOOL)",                         check_ms_reproducability_is_bool),
+        ("MS_REPRODUCIBILITY only contains True/False",                  check_ms_reproducability_only_true_false),
+        ("MS_REPRODUCIBILITY has no null values",                        check_ms_reproducability_no_nulls),
         # POS_INT_REP1
         ("POS_INT_REP1 is numeric (FLOAT)",                              check_pos_int_rep1_is_float),
         (f"POS_INT_REP1 values are >= {POS_INT_REP_MIN}",                check_pos_int_rep1_at_least),

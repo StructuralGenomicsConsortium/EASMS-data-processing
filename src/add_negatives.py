@@ -33,16 +33,24 @@ def add_negative_samples_from_masterlist(df, file_name, masterlist_path, MasterL
 
     masterlist_name = masterlist_name.values[0]  # Extract string value
 
-    # Construct the full path to the master list file
-    masterlist_file = os.path.join(masterlist_path, f"{masterlist_name}.xlsx")
+    # Resolve the master list file, accepting either .xlsx or .csv (xlsx wins
+    # if both exist).
+    masterlist_file = None
+    for ext in (".xlsx", ".csv"):
+        candidate = os.path.join(masterlist_path, f"{masterlist_name}{ext}")
+        if os.path.exists(candidate):
+            masterlist_file = candidate
+            break
 
-    # Check if the master list file exists
-    if not os.path.exists(masterlist_file):
-        print(f"Warning: Master list file {masterlist_file} not found. Skipping negative sample addition.")
+    if masterlist_file is None:
+        print(f"Warning: Master list file '{masterlist_name}' (.xlsx or .csv) not found in {masterlist_path}. Skipping negative sample addition.")
         return df
 
-    # Load the master list file
-    master_df = pd.read_excel(masterlist_file)
+    # Load the master list file with the reader matching its extension
+    if masterlist_file.lower().endswith(".csv"):
+        master_df = pd.read_csv(masterlist_file)
+    else:
+        master_df = pd.read_excel(masterlist_file)
 
     # Ensure 'SMILES' column exists in the master list
     if "SMILES" not in master_df.columns:
