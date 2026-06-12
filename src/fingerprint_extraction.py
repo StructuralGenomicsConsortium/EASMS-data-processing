@@ -1,62 +1,53 @@
 # -*- coding: utf-8 -*-
-"""
-Created on Sun Mar  2 17:29:20 2025
+"""Molecular fingerprint + property extraction (Step 7).
 
-@author: shagh
+Computes `MW`, `ALOGP`, and the nine HitGen fingerprints per row from the
+`SMILES` column. Optimized to avoid per-row / per-fingerprint redundancy:
+
+  * Parse each SMILES to an RDKit Mol **once**, then hand the Mol to every
+    fingerprint generator (a naive version re-parses the SMILES ~10 times per
+    row — once inside each of the 9 generators, plus once for MW/ALOGP).
+  * Call each generator **once over the whole column** instead of once per row,
+    removing per-call numpy wrapping overhead.
+  * Compute on the set of **unique** SMILES and map results back to rows, so
+    duplicate SMILES (negatives, repeated compounds, isomer expansion) are
+    computed only once.
 """
 
-import pandas as pd
 import numpy as np
-from rdkit import Chem
 from rdkit.Chem import Descriptors
-from fingerprints import HitGenMACCS, HitGenECFP4, HitGenECFP6, HitGenFCFP4, HitGenFCFP6, HitGenRDK, HitGenAvalon, HitGenTopTor, HitGenAtomPair
+import pandas as pd
+from fingerprints import (
+    HitGenMACCS, HitGenECFP4, HitGenECFP6, HitGenFCFP4, HitGenFCFP6,
+    HitGenRDK, HitGenAvalon, HitGenTopTor, HitGenAtomPair,
+)
+from utils import to_mol
 
-def compute_molecular_properties(smiles):
-    """
-    Computes molecular properties (MW, ALOGP) for a given SMILES.
-    """
-    mol = Chem.MolFromSmiles(smiles)
-    if mol:
-        mw = Descriptors.MolWt(mol)
-        alogp = Descriptors.MolLogP(mol)
-    else:
-        mw = np.nan
-        alogp = np.nan
-    return mw, alogp
+# Order defines the output column order for the fingerprint columns.
+FINGERPRINT_CLASSES = {
+    "ECFP4": HitGenECFP4(),
+    "ECFP6": HitGenECFP6(),
+    "FCFP4": HitGenFCFP4(),
+    "FCFP6": HitGenFCFP6(),
+    "MACCS": HitGenMACCS(),
+    "RDK": HitGenRDK(),
+    "AVALON": HitGenAvalon(),
+    "TOPTOR": HitGenTopTor(),
+    "ATOMPAIR": HitGenAtomPair(),
+}
 
-def generate_fingerprints(smiles, fps_dict, fp_format="array"):
-    """
-    Generates fingerprints for a given SMILES string.
 
-    Args:
-        smiles (str): The input SMILES.
-        fps_dict (dict): Dictionary of fingerprint classes.
-        fp_format (str): Storage format for each fingerprint value.
-            "array"  (default) -> numpy.ndarray (float32).
-            "string"            -> comma-separated string of values (legacy format,
-                                   what earlier pipeline versions emitted).
+def _row_to_string(row):
+    """Format one fingerprint row as a comma-separated string.
 
-    Returns:
-        dict: Dictionary with fingerprint names as keys and fingerprint data as values.
+    Legacy "string" format: integer counts/bits as plain ints (`'1'`, not
+    `'1.0'`), and `'nan'` for failed molecules.
     """
-    fp_data = {}
-    for fp_name, fp_class in fps_dict.items():
-        try:
-            fp_array = fp_class.generate_fps(smis=[smiles]).flatten()
-            if fp_format == "string":
-                fp_data[fp_name] = ','.join(map(str, fp_array))
-            else:
-                fp_data[fp_name] = fp_array.astype(np.float32)
-        except Exception:
-            if fp_format == "string":
-                fp_data[fp_name] = ','.join(['nan'] * fp_class._dimension)
-            else:
-                fp_data[fp_name] = np.full(fp_class._dimension, np.nan, dtype=np.float32)
-    return fp_data
+    return ",".join("nan" if v != v else str(int(v)) for v in row)
+
 
 def extract_fingerprints(df, fp_format="array"):
-    """
-    Extracts molecular fingerprints and molecular properties for a given DataFrame.
+    """Extracts molecular fingerprints and molecular properties for a DataFrame.
 
     Args:
         df (pd.DataFrame): Input DataFrame containing a "SMILES" column.
@@ -65,41 +56,37 @@ def extract_fingerprints(df, fp_format="array"):
             (legacy format from earlier pipeline versions).
 
     Returns:
-        pd.DataFrame: Updated DataFrame with fingerprint features and molecular properties.
+        pd.DataFrame: Input columns + MW, ALOGP, and one column per fingerprint.
     """
-
-    # Ensure the 'SMILES' column exists
     if "SMILES" not in df.columns:
         raise ValueError("Input DataFrame must contain a 'SMILES' column")
 
-    # Define fingerprint classes
-    fingerprint_classes = {
-        'ECFP4': HitGenECFP4(),
-        'ECFP6': HitGenECFP6(),
-        'FCFP4': HitGenFCFP4(),
-        'FCFP6': HitGenFCFP6(),
-        'MACCS': HitGenMACCS(),
-        'RDK': HitGenRDK(),
-        'AVALON': HitGenAvalon(),
-        'TOPTOR': HitGenTopTor(),
-        'ATOMPAIR': HitGenAtomPair()
-    }
+    # Unique SMILES → per-row code mapping. use_na_sentinel=False keeps NaN as
+    # its own unique entry (rather than code -1).
+    codes, uniques = pd.factorize(df["SMILES"], use_na_sentinel=False)
 
-    # Compute fingerprints and molecular properties
-    fingerprint_data = []
-    molecular_props = []
+    # Parse each unique SMILES once. to_mol returns a Mol for valid SMILES,
+    # passes existing Mols through, and yields None for invalid/NaN input.
+    mols = [to_mol(s) for s in uniques]
 
-    for smiles in df["SMILES"]:
-        fps = generate_fingerprints(smiles, fingerprint_classes, fp_format=fp_format)
-        fingerprint_data.append(fps)
-        mw, alogp = compute_molecular_properties(smiles)
-        molecular_props.append({"MW": mw, "ALOGP": alogp})
+    # Molecular properties per unique molecule.
+    mw_u = np.array([Descriptors.MolWt(m) if m is not None else np.nan for m in mols])
+    alogp_u = np.array([Descriptors.MolLogP(m) if m is not None else np.nan for m in mols])
 
-    # Convert lists to DataFrames
-    fingerprint_df = pd.DataFrame(fingerprint_data)
-    molecular_props_df = pd.DataFrame(molecular_props)
- 
-    # Concatenate the original DataFrame with fingerprints and molecular properties
-    df = pd.concat([df, molecular_props_df, fingerprint_df], axis=1)
+    out = df.copy()
+    # Map unique-level results back to every row via the factorize codes
+    # (positional assignment — independent of the DataFrame index).
+    out["MW"] = mw_u[codes]
+    out["ALOGP"] = alogp_u[codes]
 
-    return df
+    # Each generator runs once over all unique mols → (U, dimension) array.
+    # None mols come back as a row of NaN (handled inside generate_fps).
+    for name, fp in FINGERPRINT_CLASSES.items():
+        fps_u = fp.generate_fps(mols)
+        if fp_format == "string":
+            per_unique = [_row_to_string(r) for r in fps_u]
+        else:
+            per_unique = [r.astype(np.float32) for r in fps_u]
+        out[name] = [per_unique[c] for c in codes]
+
+    return out
