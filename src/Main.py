@@ -273,6 +273,7 @@ if __name__ == "__main__":
      'PROTEIN_NUMBER',
      'TARGET_ID',
      'PROTEIN_ID',
+     'PROTEIN_NAME',
      'PROTEIN_SEQ',
      'PROTEIN_TAG',
      'INCUBATION_VOLUME (uL)',
