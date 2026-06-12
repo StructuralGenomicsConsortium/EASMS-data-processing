@@ -1,5 +1,4 @@
 import pandas as pd
-import numpy as np
 
 def generate_ml_labels(df):
     """
@@ -18,11 +17,8 @@ def generate_ml_labels(df):
     if not required_columns.issubset(df.columns):
         raise ValueError(f"Missing required columns: {required_columns - set(df.columns)}")
 
-    # Clean up values
-    df["EASMS_ENRICHMENT"].replace("", np.nan, inplace=True)
-    df["PVALUE"].replace("", np.nan, inplace=True)
-
-    # Convert to numeric
+    # Convert to numeric. errors="coerce" turns empty strings and other
+    # non-numeric values into NaN, so no separate ""-> NaN cleanup is needed.
     df["EASMS_ENRICHMENT"] = pd.to_numeric(df["EASMS_ENRICHMENT"], errors="coerce")
     df["PVALUE"] = pd.to_numeric(df["PVALUE"], errors="coerce")
 
