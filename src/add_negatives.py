@@ -1,6 +1,6 @@
-import os
 import pandas as pd
 import numpy as np
+from io_utils import pjoin, exists
 
 def add_negative_samples_from_masterlist(df, file_name, masterlist_path):
     """
@@ -37,8 +37,8 @@ def add_negative_samples_from_masterlist(df, file_name, masterlist_path):
     # if both exist).
     masterlist_file = None
     for ext in (".xlsx", ".csv"):
-        candidate = os.path.join(masterlist_path, f"{masterlist_name}{ext}")
-        if os.path.exists(candidate):
+        candidate = pjoin(masterlist_path, f"{masterlist_name}{ext}")
+        if exists(candidate):
             masterlist_file = candidate
             break
 

@@ -5,8 +5,8 @@ Created on Fri Feb 28 10:10:24 2025
 @author: shay
 """
 
-import os
 import pandas as pd
+from io_utils import pjoin
 
 def split_protein_data(file_path, subfolder):
     """
@@ -40,7 +40,7 @@ def split_protein_data(file_path, subfolder):
         file_name = f"{protein_name}.csv"
 
         # Define the file path
-        output_path = os.path.join(subfolder, file_name)
+        output_path = pjoin(subfolder, file_name)
 
         # Save the separated file
         group_df.to_csv(output_path, index=False) 

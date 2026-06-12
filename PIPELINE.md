@@ -6,11 +6,11 @@ For QC details (Step 0), see [QUALITY_CHECKS.md](QUALITY_CHECKS.md). For run ins
 
 ## Pipeline Steps
 
-The entry point is [src/Main.py](src/Main.py). It iterates over every CSV in `RawData/` and runs Step 0 (QC) first, then the steps below for files that pass QC.
+The entry point is [src/Main.py](src/Main.py). It processes the raw CSV(s) you pass via `--input-file` (one file) or `--input-dir` (a folder of CSVs) — local or `gs://` — running Step 0 (QC) first, then the steps below for files that pass QC.
 
 ### 1. Split by target — [`separate_protein_files.split_protein_data`](src/separate_protein_files.py)
 
-Groups rows in the raw CSV by `TARGET_ID` and writes one CSV per target into `ProcessedData_<csv_basename>/Separated_Files/`. Requires `PROTEIN_NUMBER`, `ASMS_BATCH_NAME`, and `TARGET_ID` columns.
+Groups rows in the raw CSV by `TARGET_ID` and writes one CSV per target into `ProcessedData_<csv_basename>/Step1_Separated/`. Requires `PROTEIN_NUMBER`, `ASMS_BATCH_NAME`, and `TARGET_ID` columns.
 
 ### 2. Compute scores — [`add_scores.compute_and_add_scores`](src/add_scores.py)
 
@@ -57,7 +57,7 @@ Splits rows whose `SMILES` contains multiple isomers separated by `;` into one r
 
 ### 5. Add negative samples — [`add_negatives.add_negative_samples_from_masterlist`](src/add_negatives.py)
 
-Looks up the master-list file for the current raw CSV via `MasterList_Information.xlsx`, loads it, and adds compounds from the master list as negative samples. Each master list must contain a `SMILES` column.
+Resolves the master-list file for the current raw CSV from its `LIBRARY_NAME` column — loads `<LIBRARY_NAME>.xlsx` or `<LIBRARY_NAME>.csv` from the master-lists folder (`--masterlists-dir`, default `<repo>/MasterLists`) — and adds its compounds as negative samples. Each master list must contain a `SMILES` column; `formula`, `COMPOUND_ID`/`SGC ID for Component`, and `SGC ID for Pool` are copied onto the negatives when present.
 
 ### 6. Generate ML labels — [`produce_ml_labels.generate_ml_labels`](src/produce_ml_labels.py)
 
@@ -122,7 +122,7 @@ python src/Main.py --end-at 5
 
 ## Output Layout
 
-For each input CSV, the pipeline creates one `ProcessedData_<csv_basename>/` folder inside `--output-dir` (which defaults to `--input-dir`). Each step's output lives in its own folder so any step can be re-run from saved checkpoints:
+For each input CSV, the pipeline creates one `ProcessedData_<csv_basename>/` folder inside `--output-dir` (which defaults to the input file's folder, or the `--input-dir` folder). On a `gs://` input/output this whole tree is written into the bucket. Each step's output lives in its own folder so any step can be re-run from saved checkpoints:
 
 ```
 ProcessedData_<csv_basename>/

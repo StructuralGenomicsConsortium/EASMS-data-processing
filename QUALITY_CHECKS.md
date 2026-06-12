@@ -78,7 +78,7 @@ Files must be named `asms_<provider>_<batch>_<library>_<YYYYMMDD>.csv` (e.g. `as
 10. **Filename matches overall format** — must parse as `asms_<provider>_<batchN>_<library>_<YYYYMMDD>.csv`.
 11. **Provider acronym is registered** — the `<provider>` token must appear in the `acronym` column of `Providers.csv` (see *Providers config* below).
 12. **Batch number is in valid range** — integer between `MIN_BATCH_NUMBER` (0) and `MAX_BATCH_NUMBER` (10000). Leading zeros are allowed (`01`, `0100`).
-13. **Library name is registered** — the `<library>` token must match the filename stem of a file in `MasterLists/` (excluding `MasterList_Information.xlsx`).
+13. **Library name is registered** — the `<library>` token must match the filename stem of a library file (`.xlsx`/`.csv`) in the master-lists folder.
 14. **Date is valid `YYYYMMDD` and not in the future** — parsed with `datetime.strptime`; must be ≤ today.
 
 ## Row Content Checks
@@ -90,6 +90,8 @@ Files must be named `asms_<provider>_<batch>_<library>_<YYYYMMDD>.csv` (e.g. `as
 ## Column Content Checks
 
 Before running these, the orchestrator reads the file once and drops fully-duplicate rows (the same rows Check 15 flagged), so column-content checks see the cleaned data — not the raw file. This is QC-internal only; the actual pipeline's Step 3 still does its own `drop_duplicates()` on the unmodified input.
+
+> The check numbers below are indicative. The `PROTEIN_NAME` column adds three checks after `PROTEIN_ID`, so the actual numbering of later checks is shifted accordingly — the authoritative list is the `SECTIONS` table in [src/quality_check.py](src/quality_check.py).
 
 ### `COMPOUND_ID`
 
@@ -106,7 +108,7 @@ QC runs *before* Step 4 (isomer handling), so SMILES values may still be `;`-sep
 21. **SMILES has no leading/trailing whitespace** — FAIL; matches against the library are exact-string matches.
 22. **SMILES has no null values** — FAIL.
 23. **SMILES is valid (non-empty, RDKit-parseable)** — FAIL when any row is empty or any isomer component fails `rdkit.Chem.MolFromSmiles`. Writes `invalid_smiles_report.csv` with the offending rows and an `Issue` column (`empty` or `malformed: '<part>'`).
-24. **SMILES is in the associated library** — WARN. Resolves the library for this raw CSV via `MasterList_Information.xlsx` (FileName → MaterListName → `<MaterListName>.xlsx`), loads its `SMILES` column, and checks every input SMILES (or isomer component) against it. Writes `smiles_not_in_library_report.csv` with each offending row and a `MissingPart` column showing which component wasn't found. This check FAILs (not WARNs) if the library could not be located at all — that's a configuration error.
+24. **SMILES is in the associated library** — WARN. Resolves the library for this raw CSV from its `LIBRARY_NAME` column (`<LIBRARY_NAME>.xlsx`/`.csv` in the master-lists folder), loads its `SMILES` column, and checks every input SMILES (or isomer component) against it. Writes `smiles_not_in_library_report.csv` with each offending row and a `MissingPart` column showing which component wasn't found. This check FAILs (not WARNs) if the library could not be located at all — that's a configuration error.
 25. **SMILES is unique within each TARGET_ID** — WARN. Same idea as Check 19 but on SMILES: if the same molecule appears more than once for the same target, a per-target report is written: `duplicate_SMILES_per_TARGET_ID_<TARGET_ID>.csv`.
 
 ### `ASMS_BATCH_NAME`
@@ -174,7 +176,15 @@ A number associated with each protein in the batch. In a batch of 8 proteins, th
 55. **PROTEIN_ID has no null values** — FAIL.
 56. **PROTEIN_ID is consistent within each TARGET_ID** — FAIL. Groups rows by `TARGET_ID` and counts distinct `PROTEIN_ID` values per group; if any group has more than one, the row group is flagged. The detail message lists up to five offending targets along with the conflicting PROTEIN_ID values seen.
 
-### `INCUBATION_VOLUME` (FLOAT)
+### `PROTEIN_NAME` (VARCHAR)
+
+The protein name. Same string trio as `PROTEIN_ID`:
+
+- **PROTEIN_NAME is string (VARCHAR)** — WARN.
+- **PROTEIN_NAME has no leading/trailing whitespace** — FAIL.
+- **PROTEIN_NAME has no null values** — FAIL.
+
+### `INCUBATION_VOLUME (uL)` (FLOAT)
 
 `INCUBATION_VOLUME` is the incubation volume used in the run, in µL.
 
@@ -184,7 +194,7 @@ A number associated with each protein in the batch. In a batch of 8 proteins, th
 
 > **Placeholder, not yet active**: a check for "within realistic experimental range" is sketched as a commented-out block in [src/quality_check.py](src/quality_check.py) right above the active INCUBATION_VOLUME checks. When the realistic uL range is decided, set `INCUBATION_VOLUME_MIN` / `INCUBATION_VOLUME_MAX`, uncomment the function, and add it to the SECTIONS list.
 
-### `PROTEIN_CONC` (FLOAT)
+### `PROTEIN_CONC (uM)` (FLOAT)
 
 `PROTEIN_CONC` is the protein concentration used in the run, in µM. The experimental protocol fixes it at `PROTEIN_CONC_EXPECTED = 1.0` µM (the constant lives at the top of the PROTEIN_CONC block in [src/quality_check.py](src/quality_check.py); change it if the protocol uses a different fixed value).
 
@@ -194,7 +204,7 @@ A number associated with each protein in the batch. In a batch of 8 proteins, th
 
 > **Placeholder, not yet active**: a check for "within realistic experimental range" is sketched as a commented-out block in [src/quality_check.py](src/quality_check.py) right above the active PROTEIN_CONC checks. When the realistic µM range is decided, set `PROTEIN_CONC_MIN` / `PROTEIN_CONC_MAX`, uncomment the function, and add it to the SECTIONS list.
 
-### `COMPOUND_CONC` (FLOAT)
+### `COMPOUND_CONC (uM)` (FLOAT)
 
 `COMPOUND_CONC` is the compound concentration used in the run, in µM.
 
@@ -202,11 +212,13 @@ A number associated with each protein in the batch. In a batch of 8 proteins, th
 64. **COMPOUND_CONC values are positive (> 0)** — FAIL. Reports both non-positive values and any cells that couldn't be parsed as numbers.
 65. **COMPOUND_CONC has no null values** — FAIL.
 
-### `MS_REPRODUCABILITY` (BOOL)
+### `MS_REPRODUCIBILITY` (BOOL)
 
-66. **MS_REPRODUCABILITY is boolean (BOOL)** — WARN. Verifies the pandas dtype is `bool`.
-67. **MS_REPRODUCABILITY only contains True/False** — FAIL. Set-membership against `{True, False}`. Catches accidental string `"True"`/`"False"` or numeric 0/1 values that may slip in with object-dtype columns.
-68. **MS_REPRODUCABILITY has no null values** — FAIL.
+Values must be real booleans — write `True`/`False` in the CSV (pandas parses those to `bool`). Strings like `"pass"`/`"yes"` or `1`/`0` fail the allowed-values check.
+
+66. **MS_REPRODUCIBILITY is boolean (BOOL)** — WARN. Verifies the pandas dtype is `bool`.
+67. **MS_REPRODUCIBILITY only contains True/False** — FAIL. Set-membership against `{True, False}`. Catches accidental string `"True"`/`"False"` or numeric 0/1 values that may slip in with object-dtype columns.
+68. **MS_REPRODUCIBILITY has no null values** — FAIL.
 
 ### `POS_INT_REP1` / `POS_INT_REP2` / `POS_INT_REP3` (FLOAT, peak intensity per replicate)
 
@@ -238,9 +250,9 @@ The library name in this column must be a single alphanumeric token (e.g. `EASMS
 82. **LIBRARY_NAME has no leading/trailing whitespace** — FAIL.
 83. **LIBRARY_NAME has no null values** — FAIL.
 84. **LIBRARY_NAME is alphanumeric (no underscores/spaces)** — FAIL. Regex: `^[A-Za-z0-9]+$`.
-85. **LIBRARY_NAME is registered** — FAIL. Each value must match a filename stem in `MasterLists/` (`MasterList_Information.xlsx` excluded). Uses the same `libraries` context as filename Check 13.
+85. **LIBRARY_NAME is registered** — FAIL. Each value must match a library filename stem (`.xlsx`/`.csv`) in the master-lists folder. Uses the same `libraries` context as filename Check 13.
 86. **LIBRARY_NAME is consistent across all rows** — FAIL when more than one distinct value appears in the column.
-87. **Library name matches filename, column, and `MasterLists/` file** — FAIL. Cross-check: the `<library>` segment of the filename, the (single) value in the `LIBRARY_NAME` column, and a file `<library>.xlsx` in `MasterLists/` must all name the same library. Complements Checks 13 / 85 / 86 (which each look at one source in isolation).
+87. **Library name matches filename, column, and master-list file** — FAIL. Cross-check: the `<library>` segment of the filename, the (single) value in the `LIBRARY_NAME` column, and a file `<library>.xlsx`/`.csv` in the master-lists folder must all name the same library. Complements Checks 13 / 85 / 86 (which each look at one source in isolation).
 
 ### `DATA_GENERATOR_NAME`
 
@@ -268,7 +280,7 @@ Allowed values (case-sensitive): `achiral`, `chiral_selective`, `chiral_not_sele
 97. **CHIRAL_SELECTIVITY is string (VARCHAR)** — WARN.
 98. **CHIRAL_SELECTIVITY has no leading/trailing whitespace** — FAIL.
 99. **CHIRAL_SELECTIVITY has no null values** — FAIL.
-100. **CHIRAL_SELECTIVITY is one of the allowed values** — FAIL. Set-membership against `CHIRAL_SELECTIVITY_ALLOWED`. Lists up to five offending values in the log message.
+100. **CHIRAL_SELECTIVITY is one of the allowed values** — FAIL. Set-membership against `CHIRAL_SELECTIVITY_ALLOWED`. The log message keeps just the count plus a small sample; the full offending rows (with their row index) are written to `chiral_selectivity_not_allowed_report.csv` for investigation.
 
 ### `MZ` (FLOAT, mass-to-charge ratio)
 
@@ -276,7 +288,7 @@ Allowed values (case-sensitive): `achiral`, `chiral_selective`, `chiral_not_sele
 102. **MZ is in valid range [150, 600]** — FAIL. Inclusive on both ends; bounds are `MZ_MIN` / `MZ_MAX` at the top of the MZ block in [src/quality_check.py](src/quality_check.py).
 103. **MZ has no null values** — FAIL.
 
-### `RT` (FLOAT, retention time in minutes)
+### `RT (min)` (FLOAT, retention time in minutes)
 
 104. **RT is numeric (FLOAT)** — WARN.
 105. **RT is in valid range (0, 6) exclusive** — FAIL. **Strictly** greater than 0 and **strictly** less than 6 (so `0` and `6` themselves both fail). Bounds are `RT_MIN` / `RT_MAX` at the top of the RT block in [src/quality_check.py](src/quality_check.py).
@@ -299,7 +311,7 @@ The protein sequence must be longer than 6 characters. Threshold lives at `PROTE
 
 ## Providers config
 
-The list of valid provider acronyms is loaded from `Providers.csv` inside `--input-dir` (next to `RawData/`). Expected format:
+The list of valid provider acronyms is loaded from `Providers.csv` (default: the repo root, or `--providers-csv`). Expected format:
 
 ```csv
 acronym,name,data_generator_name
@@ -311,7 +323,7 @@ genericrx,GenericRx Therapeutics,ASMS_GENERICRX
 - `acronym` is used by filename Check 11 (the `<provider>` segment of the raw CSV filename) and the `ASMS_BATCH_NAME` format check.
 - `data_generator_name` is used by column Check 90 (the `DATA_GENERATOR_NAME` column in the raw CSV must match one of these exact strings).
 
-The real `Providers.csv` is gitignored (private company info). A fake version with placeholder names lives at [Providers_sample.csv](Providers_sample.csv) — copy it into your `--input-dir` as `Providers.csv` and replace the entries with the real acronyms and data-generator names.
+The real `Providers.csv` is gitignored (private company info). A fake version with placeholder names lives at [Providers_sample.csv](Providers_sample.csv) — copy it to `Providers.csv` (in the repo root, or wherever you point `--providers-csv`) and replace the entries with the real acronyms and data-generator names.
 
 ## Extending
 
@@ -328,4 +340,4 @@ The orchestrator passes the following keys via `context`:
 - `meta_columns` — list of canonical column names from `ASMS Meta Data.csv`
 - `output_dir` — the same folder as the log file (useful for writing supplementary report CSVs)
 - `df` — the input CSV pre-loaded as a `pandas.DataFrame` with fully-duplicate rows dropped (for column-content checks). Will be `None` if the file could not be parsed.
-- `masterlist_dir` — path to the `MasterLists/` folder, for checks that need to load a specific library file via `MasterList_Information.xlsx`.
+- `masterlist_dir` — path to the master-lists folder, for checks that load a specific library file (resolved from the `LIBRARY_NAME` column).

@@ -12,6 +12,7 @@ import os
 import argparse
 from datetime import datetime
 import pandas as pd
+from io_utils import pjoin, listdir, makedirs, dirname, isdir
 from separate_protein_files import split_protein_data
 from add_scores import compute_and_add_scores
 from anomaly_selection import filter_anomalous_data
@@ -51,31 +52,34 @@ def _step_input_files(start_from, step_dirs, scored_files):
     load_dir = step_dirs[load_step]
     ext = ".parquet" if load_step >= PARQUET_FROM_STEP else ".csv"
     return sorted(
-        os.path.join(load_dir, f) for f in os.listdir(load_dir) if f.endswith(ext)
+        pjoin(load_dir, f) for f in listdir(load_dir) if f.endswith(ext)
     )
 
 
-def process_csv_files(data_path, masterlist_path, output_dir, providers_csv,
+def process_csv_files(input_files, masterlist_path, output_dir, providers_csv,
                       DesiredColumns, DesiredColumns2,
                       start_from=0, end_at=9, meta_csv=None, fp_format="array"):
-    """Processes all CSV files through data curation steps 1..9.
+    """Processes the given CSV files through data curation steps 1..9.
+
+    `input_files` is a list of raw CSV paths (local or gs://). For each file, a
+    `ProcessedData_<name>/` folder is created under `output_dir`.
 
     start_from / end_at gate which steps execute. Steps not run are loaded from
     their saved output on disk, so the pipeline can resume from any checkpoint.
     Step 0 (QC) only runs when start_from <= 0.
     """
-    for file_name in os.listdir(data_path):
+    for file_path in input_files:
+        file_name = os.path.basename(file_path)
         if not file_name.endswith(".csv"):
             continue
 
-        file_path = os.path.join(data_path, file_name)
         print(f"Processing: {file_name}")
 
         csv_basename = os.path.splitext(file_name)[0]
-        processed_data_dir = os.path.join(output_dir, f"ProcessedData_{csv_basename}")
-        os.makedirs(processed_data_dir, exist_ok=True)
+        processed_data_dir = pjoin(output_dir, f"ProcessedData_{csv_basename}")
+        makedirs(processed_data_dir, exist_ok=True)
 
-        step_dirs = {n: os.path.join(processed_data_dir, name) for n, name in STEP_FOLDERS.items()}
+        step_dirs = {n: pjoin(processed_data_dir, name) for n, name in STEP_FOLDERS.items()}
 
         # Step 0: QC (only when start-from == 0)
         if start_from <= 0:
@@ -87,7 +91,7 @@ def process_csv_files(data_path, masterlist_path, output_dir, providers_csv,
                 meta_csv=meta_csv,
             )
             if not qc_passed:
-                log_path = os.path.join(processed_data_dir, f"QCaircheck{datetime.now().strftime('%Y%m%d')}_{csv_basename}.log")
+                log_path = pjoin(processed_data_dir, f"QCaircheck{datetime.now().strftime('%Y%m%d')}_{csv_basename}.log")
                 bar = "=" * 70
                 print()
                 print(bar)
@@ -112,23 +116,23 @@ def process_csv_files(data_path, masterlist_path, output_dir, providers_csv,
 
         # ---- Step 1: split by target ----
         if start_from <= 1:
-            os.makedirs(step_dirs[1], exist_ok=True)
+            makedirs(step_dirs[1], exist_ok=True)
             separated_files = split_protein_data(file_path, step_dirs[1])
         else:
             separated_files = sorted(
-                os.path.join(step_dirs[1], f) for f in os.listdir(step_dirs[1]) if f.endswith(".csv")
+                pjoin(step_dirs[1], f) for f in listdir(step_dirs[1]) if f.endswith(".csv")
             )
         if end_at < 2:
             continue
 
         # ---- Step 2: compute scores (batch over all separated files) ----
         if start_from <= 2:
-            os.makedirs(step_dirs[2], exist_ok=True)
+            makedirs(step_dirs[2], exist_ok=True)
             print("\nComputing and Adding Scores to All Separated Files...\n")
             scored_files = compute_and_add_scores(separated_files, output_dir=step_dirs[2])
         else:
             scored_files = sorted(
-                os.path.join(step_dirs[2], f) for f in os.listdir(step_dirs[2]) if f.endswith(".csv")
+                pjoin(step_dirs[2], f) for f in listdir(step_dirs[2]) if f.endswith(".csv")
             )
         if end_at < 3:
             continue
@@ -147,38 +151,38 @@ def process_csv_files(data_path, masterlist_path, output_dir, providers_csv,
 
             # Step 3: filter anomalies
             if start_from <= 3 and end_at >= 3:
-                os.makedirs(step_dirs[3], exist_ok=True)
+                makedirs(step_dirs[3], exist_ok=True)
                 df = filter_anomalous_data(df, f"{base_name}.csv")
-                df.to_csv(os.path.join(step_dirs[3], f"{base_name}.csv"), index=False)
+                df.to_csv(pjoin(step_dirs[3], f"{base_name}.csv"), index=False)
 
             # Step 4: handle isomers
             if start_from <= 4 and end_at >= 4:
-                os.makedirs(step_dirs[4], exist_ok=True)
+                makedirs(step_dirs[4], exist_ok=True)
                 df = handle_isomers(df, f"{base_name}.csv")
-                df.to_csv(os.path.join(step_dirs[4], f"{base_name}.csv"), index=False)
+                df.to_csv(pjoin(step_dirs[4], f"{base_name}.csv"), index=False)
 
             # Step 5: add negative samples
             if start_from <= 5 and end_at >= 5:
-                os.makedirs(step_dirs[5], exist_ok=True)
+                makedirs(step_dirs[5], exist_ok=True)
                 df = add_negative_samples_from_masterlist(df, file_name, masterlist_path)
-                df.to_csv(os.path.join(step_dirs[5], f"{base_name}.csv"), index=False)
+                df.to_csv(pjoin(step_dirs[5], f"{base_name}.csv"), index=False)
 
             # Step 6: generate ML labels (last CSV step)
             if start_from <= 6 and end_at >= 6:
-                os.makedirs(step_dirs[6], exist_ok=True)
+                makedirs(step_dirs[6], exist_ok=True)
                 df = generate_ml_labels(df)
-                df.to_csv(os.path.join(step_dirs[6], f"{base_name}.csv"), index=False)
+                df.to_csv(pjoin(step_dirs[6], f"{base_name}.csv"), index=False)
 
             # Step 7: extract fingerprints + rename + add binary LABEL (first Parquet step)
             if start_from <= 7 and end_at >= 7:
-                os.makedirs(step_dirs[7], exist_ok=True)
+                makedirs(step_dirs[7], exist_ok=True)
                 df = extract_fingerprints(df, fp_format=fp_format)
                 df = df.rename(columns={
                     "TARGET_VALUE": "TARGET_INTENSITY_VALUE",
                     "MEAN_NONTARGET_VALUES": "NONTARGET_INTENSITY_VALUE",
                 })
                 df["LABEL"] = df["BINARY_LABEL"]
-                df.to_parquet(os.path.join(step_dirs[7], f"{base_name}.parquet"), index=False)
+                df.to_parquet(pjoin(step_dirs[7], f"{base_name}.parquet"), index=False)
 
             # Steps 8 and 9 both read the Step 7 dataframe (parallel branches).
             # select_final_columns returns a new DataFrame, so `df` stays intact
@@ -186,15 +190,15 @@ def process_csv_files(data_path, masterlist_path, output_dir, providers_csv,
 
             # Step 8: select full column set
             if start_from <= 8 and end_at >= 8:
-                os.makedirs(step_dirs[8], exist_ok=True)
+                makedirs(step_dirs[8], exist_ok=True)
                 df_full = select_final_columns(df, DesiredColumns)
-                df_full.to_parquet(os.path.join(step_dirs[8], f"{base_name}.parquet"), index=False)
+                df_full.to_parquet(pjoin(step_dirs[8], f"{base_name}.parquet"), index=False)
 
             # Step 9: select key (slim) column set
             if start_from <= 9 and end_at >= 9:
-                os.makedirs(step_dirs[9], exist_ok=True)
+                makedirs(step_dirs[9], exist_ok=True)
                 df_key = select_final_columns(df, DesiredColumns2)
-                df_key.to_parquet(os.path.join(step_dirs[9], f"{base_name}.parquet"), index=False)
+                df_key.to_parquet(pjoin(step_dirs[9], f"{base_name}.parquet"), index=False)
 
         # ---- Post-pipeline QC ----
         # Runs once per input CSV, after every per-target Step 8 Parquet has
@@ -208,11 +212,11 @@ def process_csv_files(data_path, masterlist_path, output_dir, providers_csv,
             )
 
 
-def main(data_path, masterlist_path, output_dir, providers_csv,
+def main(input_files, masterlist_path, output_dir, providers_csv,
          DesiredColumns, DesiredColumns2,
          start_from=0, end_at=9, meta_csv=None, fp_format="array"):
     """Main function to execute the full data curation pipeline."""
-    process_csv_files(data_path, masterlist_path, output_dir, providers_csv,
+    process_csv_files(input_files, masterlist_path, output_dir, providers_csv,
                       DesiredColumns, DesiredColumns2,
                       start_from=start_from, end_at=end_at, meta_csv=meta_csv,
                       fp_format=fp_format)
@@ -220,15 +224,40 @@ def main(data_path, masterlist_path, output_dir, providers_csv,
 if __name__ == "__main__":
     # Define paths (Modify as needed)
     parser = argparse.ArgumentParser(description="Run EASMS data processing pipeline.")
+    # Exactly one of --input-file / --input-dir selects the raw data. Both local
+    # paths and gs:// URLs are accepted.
+    parser.add_argument(
+        "--input-file",
+        default=None,
+        help="A single raw ASMS CSV to process (local path or gs:// URL). Its ProcessedData_<name>/ folder is created in the file's own folder unless --output-dir is given.",
+    )
     parser.add_argument(
         "--input-dir",
-        default=os.getcwd(),
-        help="Input directory containing RawData/, MasterLists/, and Providers.csv (default: current working directory).",
+        default=None,
+        help="A folder of raw ASMS CSVs to process (every *.csv in it, non-recursive). Alternative to --input-file.",
     )
     parser.add_argument(
         "--output-dir",
         default=None,
-        help="Output directory where ProcessedData_*/ folders are created (default: same as --input-dir).",
+        help="Where ProcessedData_*/ folders are created. Default: the folder of --input-file, or --input-dir itself.",
+    )
+    # Config / reference inputs. Default to the local repo (this checkout) so
+    # they don't have to be copied into every data location; override to point
+    # at a shared folder or a gs:// path.
+    parser.add_argument(
+        "--masterlists-dir",
+        default=None,
+        help="Folder of master-list (library) files. Default: <repo>/MasterLists.",
+    )
+    parser.add_argument(
+        "--providers-csv",
+        default=None,
+        help="Providers.csv path. Default: <repo>/Providers.csv.",
+    )
+    parser.add_argument(
+        "--meta-csv",
+        default=None,
+        help="ASMS Meta Data.csv (canonical column reference) path. Default: <repo>/ASMS Meta Data.csv.",
     )
     parser.add_argument(
         "--start-from",
@@ -249,12 +278,32 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.start_from > args.end_at:
         parser.error(f"--start-from ({args.start_from}) cannot be greater than --end-at ({args.end_at}).")
-    input_dir = args.input_dir
-    output_dir = args.output_dir if args.output_dir else input_dir
-    data_path = os.path.join(input_dir, "RawData")
-    masterlist_path = os.path.join(input_dir, "MasterLists")
-    providers_csv = os.path.join(input_dir, "Providers.csv")
-    meta_csv = os.path.join(input_dir, "ASMS Meta Data.csv")
+    if bool(args.input_file) == bool(args.input_dir):
+        parser.error("provide exactly one of --input-file or --input-dir.")
+
+    # Resolve the raw input file list and the default output location.
+    if args.input_file:
+        input_files = [args.input_file]
+        default_output_dir = dirname(args.input_file)
+    else:
+        if not isdir(args.input_dir):
+            parser.error(
+                f"--input-dir is not a folder: {args.input_dir}. "
+                "To process a single file, use --input-file instead."
+            )
+        input_files = sorted(
+            pjoin(args.input_dir, f) for f in listdir(args.input_dir) if f.endswith(".csv")
+        )
+        if not input_files:
+            parser.error(f"no .csv files found in --input-dir: {args.input_dir}")
+        default_output_dir = args.input_dir
+    output_dir = args.output_dir if args.output_dir else default_output_dir
+
+    # Config/reference inputs default to the local repo (parent of this src/ dir).
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    masterlist_path = args.masterlists_dir if args.masterlists_dir else pjoin(repo_root, "MasterLists")
+    providers_csv = args.providers_csv if args.providers_csv else pjoin(repo_root, "Providers.csv")
+    meta_csv = args.meta_csv if args.meta_csv else pjoin(repo_root, "ASMS Meta Data.csv")
 
     # How fingerprint values are stored in the Step 7+ output columns:
     #   "array"  (default) -> numpy float32 arrays, ready to use directly.
@@ -330,7 +379,7 @@ if __name__ == "__main__":
      'TOPTOR',
      'ATOMPAIR']
 
-    main(data_path, masterlist_path, output_dir, providers_csv,
+    main(input_files, masterlist_path, output_dir, providers_csv,
          DesiredColumns, DesiredColumns2,
          start_from=args.start_from, end_at=args.end_at, meta_csv=meta_csv,
          fp_format=TypeOfFp)

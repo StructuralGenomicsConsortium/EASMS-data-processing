@@ -11,11 +11,11 @@ Output written to `<ProcessedData_<csv>>/`:
 - `PostQClog_<YYYYMMDD>_<csv_basename>.xlsx` — color-coded, with Statistics tab
 """
 
-import os
 from datetime import datetime
 
 import pandas as pd
 
+from io_utils import pjoin, listdir, makedirs, isdir, open_file
 # Reuse helpers and orchestrator pieces from the input-side QC module
 from quality_check import (
     _ensure_df_and_columns,
@@ -221,11 +221,11 @@ SECTIONS = [
 def _load_pipeline_output(parquet_dir):
     """Load all `.parquet` files in `parquet_dir` and concatenate them. Returns
     None if the directory is missing or empty."""
-    if not parquet_dir or not os.path.isdir(parquet_dir):
+    if not parquet_dir or not isdir(parquet_dir):
         return None
     files = sorted(
-        os.path.join(parquet_dir, f)
-        for f in os.listdir(parquet_dir)
+        pjoin(parquet_dir, f)
+        for f in listdir(parquet_dir)
         if f.endswith(".parquet")
     )
     if not files:
@@ -250,14 +250,14 @@ def run_post_quality_checks(parquet_dir, log_dir, csv_basename):
               If parquet_dir is missing/empty, returns True and writes a one-
               line "skipped" log (post-QC is best-effort, never blocks).
     """
-    os.makedirs(log_dir, exist_ok=True)
+    makedirs(log_dir, exist_ok=True)
     today = datetime.now().strftime("%Y%m%d")
-    log_path = os.path.join(log_dir, f"PostQClog_{today}_{csv_basename}.log")
-    excel_path = os.path.join(log_dir, f"PostQClog_{today}_{csv_basename}.xlsx")
+    log_path = pjoin(log_dir, f"PostQClog_{today}_{csv_basename}.log")
+    excel_path = pjoin(log_dir, f"PostQClog_{today}_{csv_basename}.xlsx")
 
     df = _load_pipeline_output(parquet_dir)
     if df is None:
-        with open(log_path, "w", encoding="utf-8") as log:
+        with open_file(log_path, "w", encoding="utf-8") as log:
             log.write("Post-Pipeline Quality Check Log\n")
             log.write(f"Skipped: no Parquet files found in {parquet_dir}\n")
         return True
@@ -268,7 +268,7 @@ def run_post_quality_checks(parquet_dir, log_dir, csv_basename):
     generated_at = datetime.now().isoformat(timespec="seconds")
     context = {"df": df}
 
-    with open(log_path, "w", encoding="utf-8") as log:
+    with open_file(log_path, "w", encoding="utf-8") as log:
         log.write("Post-Pipeline Quality Check Log\n")
         log.write(f"Source:    {parquet_dir}\n")
         log.write(f"Rows:      {len(df):,}\n")
@@ -327,7 +327,7 @@ def run_post_quality_checks(parquet_dir, log_dir, csv_basename):
             df=df,
         )
     except Exception as e:
-        with open(log_path, "a", encoding="utf-8") as log:
+        with open_file(log_path, "a", encoding="utf-8") as log:
             log.write(f"\n(Note: failed to write Excel report: {e})\n")
 
     return all_passed
