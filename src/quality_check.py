@@ -1290,6 +1290,23 @@ def check_protein_id_no_nulls(file_path, df=None, **_):
     return _check_column_no_nulls(df, "PROTEIN_ID")
 
 
+# ---------- PROTEIN_NAME checks ----------
+
+def check_protein_name_is_string(file_path, df=None, **_):
+    """PROTEIN_NAME dtype is string (VARCHAR-equivalent)."""
+    return _check_column_is_string(df, "PROTEIN_NAME")
+
+
+def check_protein_name_no_whitespace(file_path, df=None, **_):
+    """PROTEIN_NAME values have no leading/trailing whitespace."""
+    return _check_column_no_whitespace(df, "PROTEIN_NAME")
+
+
+def check_protein_name_no_nulls(file_path, df=None, **_):
+    """PROTEIN_NAME has no null values."""
+    return _check_column_no_nulls(df, "PROTEIN_NAME")
+
+
 # ---------- INCUBATION_VOLUME checks ----------
 
 # TODO: realistic experimental range check, to be implemented later.
@@ -1401,9 +1418,44 @@ def check_chiral_selectivity_no_nulls(file_path, df=None, **_):
     return _check_column_no_nulls(df, "CHIRAL_SELECTIVITY")
 
 
-def check_chiral_selectivity_in_allowed(file_path, df=None, **_):
-    """CHIRAL_SELECTIVITY values are in the allowed list."""
-    return _check_column_in_set(df, "CHIRAL_SELECTIVITY", CHIRAL_SELECTIVITY_ALLOWED)
+def check_chiral_selectivity_in_allowed(file_path, df=None, output_dir=None, **_):
+    """CHIRAL_SELECTIVITY values are in the allowed list.
+
+    The main log message keeps just the count (and a small sample) of bad
+    values. On failure, the full offending rows — with their row index — are
+    written to `chiral_selectivity_not_allowed_report.csv` in output_dir so they
+    can be investigated later.
+    """
+    ok, fail = _ensure_df_and_columns(df, "CHIRAL_SELECTIVITY")
+    if not ok:
+        return False, fail
+
+    col = df["CHIRAL_SELECTIVITY"]
+    non_null = col.dropna()
+    if non_null.empty:
+        return True, "'CHIRAL_SELECTIVITY' is empty"
+
+    bad = non_null[~non_null.isin(CHIRAL_SELECTIVITY_ALLOWED)]
+    if bad.empty:
+        return True, f"all 'CHIRAL_SELECTIVITY' values are in {sorted(CHIRAL_SELECTIVITY_ALLOWED)}"
+
+    sample_vals = bad.unique()[:5].tolist()
+    report_msg = ""
+    if output_dir:
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+            report_df = df.loc[bad.index].copy()
+            report_df.insert(0, "RowIndex", bad.index)
+            report_path = os.path.join(output_dir, "chiral_selectivity_not_allowed_report.csv")
+            report_df.to_csv(report_path, index=False)
+            report_msg = f"; offending rows saved to {os.path.basename(report_path)}"
+        except Exception as e:
+            report_msg = f"; failed to write report: {e}"
+
+    return False, (
+        f"{len(bad):,} 'CHIRAL_SELECTIVITY' value(s) not in {sorted(CHIRAL_SELECTIVITY_ALLOWED)} "
+        f"(e.g. {sample_vals}){report_msg}"
+    )
 
 
 # ---------- MZ checks ----------
@@ -1949,6 +2001,10 @@ SECTIONS = [
         ("PROTEIN_ID has no leading/trailing whitespace",                check_protein_id_no_whitespace),
         ("PROTEIN_ID has no null values",                                check_protein_id_no_nulls),
         ("PROTEIN_ID is consistent within each TARGET_ID",               check_protein_id_consistent_per_target),
+        # PROTEIN_NAME
+        ("PROTEIN_NAME is string (VARCHAR)",                             check_protein_name_is_string),
+        ("PROTEIN_NAME has no leading/trailing whitespace",              check_protein_name_no_whitespace),
+        ("PROTEIN_NAME has no null values",                              check_protein_name_no_nulls),
         # INCUBATION_VOLUME
         ("INCUBATION_VOLUME is numeric (FLOAT)",                         check_incubation_volume_is_float),
         ("INCUBATION_VOLUME values are positive (> 0)",                  check_incubation_volume_positive),

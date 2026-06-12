@@ -73,24 +73,29 @@ def add_negative_samples_from_masterlist(df, file_name, masterlist_path):
     df["MassSpec_Detected"] = "Y"
     
     
-    # Define column mapping (Master List → df)
+    # Rename master-list source columns to the df target names, but only when
+    # the source column is present (master lists differ in which columns they
+    # carry). 'formula' -> 'COMPOUND_FORMULA' is the common case; 'COMPOUND_ID'
+    # is usually already named that way in newer master lists, so it carries
+    # over directly. Legacy 'SGC ID for Component' is mapped if present.
     column_mapping = {
-        "SGC ID for Component": "COMPOUND_ID",  # Mapping 'SGC ID for Component' from master list to 'COMPOUND_ID' in df
-        "SGC ID for Pool": "POOL_NAME",
-        "formula": "COMPOUND_FORMULA"
-        # Add more mappings if needed
+        "SGC ID for Component": "COMPOUND_ID",
+        "formula": "COMPOUND_FORMULA",
+        # POOL_NAME is intentionally NOT mapped: negative samples were not
+        # tested, so they have no pool and POOL_NAME is left empty.
     }
-
-    # Apply column mappings
     for master_col, df_col in column_mapping.items():
-        print("here")
         if master_col in new_entries.columns:
             new_entries[df_col] = new_entries[master_col]
 
-    # Select only relevant columns to append
-    columns_to_add = ["SMILES", "BINARY_LABEL","ENRICHMENT","PVALUE","MassSpec_Detected", "TARGET_ID"] + list(column_mapping.values())
+    # Carry over only the columns that actually exist on the negative rows, so a
+    # master list missing an optional column never breaks the concat. Columns
+    # not listed here (e.g. POOL_NAME) stay empty for negatives after concat.
+    desired_cols = ["SMILES", "BINARY_LABEL", "ENRICHMENT", "PVALUE",
+                    "MassSpec_Detected", "TARGET_ID", "COMPOUND_ID", "COMPOUND_FORMULA"]
+    columns_to_add = [c for c in desired_cols if c in new_entries.columns]
     df = pd.concat([df, new_entries[columns_to_add]], ignore_index=True)
 
-    print(f"Added {len(new_entries)} negative samples to {file_name} from {masterlist_name}, including columns: {list(column_mapping.values())}")
+    print(f"Added {len(new_entries)} negative samples to {file_name} from {masterlist_name}, including columns: {columns_to_add}")
 
     return df
