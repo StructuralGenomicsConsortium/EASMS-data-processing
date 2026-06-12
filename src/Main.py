@@ -151,30 +151,35 @@ def process_csv_files(input_files, masterlist_path, output_dir, providers_csv,
 
             # Step 3: filter anomalies
             if start_from <= 3 and end_at >= 3:
+                print(f"    Step 3: filtering anomalies — {base_name}", flush=True)
                 makedirs(step_dirs[3], exist_ok=True)
                 df = filter_anomalous_data(df, f"{base_name}.csv")
                 df.to_csv(pjoin(step_dirs[3], f"{base_name}.csv"), index=False)
 
             # Step 4: handle isomers
             if start_from <= 4 and end_at >= 4:
+                print(f"    Step 4: handling isomers — {base_name}", flush=True)
                 makedirs(step_dirs[4], exist_ok=True)
                 df = handle_isomers(df, f"{base_name}.csv")
                 df.to_csv(pjoin(step_dirs[4], f"{base_name}.csv"), index=False)
 
             # Step 5: add negative samples
             if start_from <= 5 and end_at >= 5:
+                print(f"    Step 5: adding negative samples — {base_name}", flush=True)
                 makedirs(step_dirs[5], exist_ok=True)
                 df = add_negative_samples_from_masterlist(df, file_name, masterlist_path)
                 df.to_csv(pjoin(step_dirs[5], f"{base_name}.csv"), index=False)
 
             # Step 6: generate ML labels (last CSV step)
             if start_from <= 6 and end_at >= 6:
+                print(f"    Step 6: generating ML labels — {base_name}", flush=True)
                 makedirs(step_dirs[6], exist_ok=True)
                 df = generate_ml_labels(df)
                 df.to_csv(pjoin(step_dirs[6], f"{base_name}.csv"), index=False)
 
             # Step 7: extract fingerprints + rename + add binary LABEL (first Parquet step)
             if start_from <= 7 and end_at >= 7:
+                print(f"    Step 7: extracting fingerprints — {base_name} ({len(df)} rows)...", flush=True)
                 makedirs(step_dirs[7], exist_ok=True)
                 df = extract_fingerprints(df, fp_format=fp_format)
                 df = df.rename(columns={
@@ -190,12 +195,14 @@ def process_csv_files(input_files, masterlist_path, output_dir, providers_csv,
 
             # Step 8: select full column set
             if start_from <= 8 and end_at >= 8:
+                print(f"    Step 8: selecting full column set — {base_name}", flush=True)
                 makedirs(step_dirs[8], exist_ok=True)
                 df_full = select_final_columns(df, DesiredColumns)
                 df_full.to_parquet(pjoin(step_dirs[8], f"{base_name}.parquet"), index=False)
 
             # Step 9: select key (slim) column set
             if start_from <= 9 and end_at >= 9:
+                print(f"    Step 9: selecting key column set — {base_name}", flush=True)
                 makedirs(step_dirs[9], exist_ok=True)
                 df_key = select_final_columns(df, DesiredColumns2)
                 df_key.to_parquet(pjoin(step_dirs[9], f"{base_name}.parquet"), index=False)
