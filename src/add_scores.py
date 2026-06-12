@@ -2,6 +2,7 @@ import os
 import pandas as pd
 import numpy as np
 import scipy.stats as stats
+from io_utils import pjoin, makedirs
 
 def compute_and_add_scores(file_paths, output_dir=None):
     """
@@ -114,10 +115,10 @@ def compute_and_add_scores(file_paths, output_dir=None):
     # Step 3: Save the updated files (either in place or into output_dir)
     saved_paths = []
     if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
+        makedirs(output_dir, exist_ok=True)
     for file_path, df in dataframes.items():
         if output_dir:
-            out_path = os.path.join(output_dir, os.path.basename(file_path))
+            out_path = pjoin(output_dir, os.path.basename(file_path))
         else:
             out_path = file_path
         df.to_csv(out_path, index=False)

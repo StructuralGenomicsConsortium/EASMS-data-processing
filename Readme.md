@@ -5,6 +5,7 @@ This repository contains a Python-based data curation pipeline for processing Af
 ## Main Features
 
 - 100+ pre-processing quality checks (file format, filename format, row content, per-column rules) with plain-text + Excel logs
+- Runs on a **single file or a folder** of files, with paths on the **local disk or Google Cloud Storage** (`gs://`) — auto-detected from the path
 - Splits protein-specific data into separate files
 - Detects and filters out anomalous entries
 - Handles isomer corrections
@@ -15,57 +16,40 @@ This repository contains a Python-based data curation pipeline for processing Af
 
 ## Documentation
 
-- **[USAGE.md](USAGE.md)** — environment setup, run commands, `--start-from` / `--end-at` flags.
+- **[USAGE.md](USAGE.md)** — environment setup, run commands, `--start-from` / `--end-at` flags, and **running on Google Cloud Storage (GCP)**.
 - **[QUALITY_CHECKS.md](QUALITY_CHECKS.md)** — Step 0 (input QC): every check, severity, and report file produced.
 - **[PIPELINE.md](PIPELINE.md)** — Steps 1–9 (data processing): what each step does, output layout, resuming.
 - **[POST_QC.md](POST_QC.md)** — Post-pipeline QC: 23 checks that run after Step 8 to catch regressions in the pipeline's own output.
 
 ## Requirements
 
-Before running the pipeline, make sure all of the following are in place. Items 2–5 live inside `--input-dir` (defaults to the current working directory).
+The pipeline needs two kinds of input: the **raw data** to process, and a few **config/reference files**. They are specified independently — you are no longer required to lay everything out inside one folder.
 
-1. **Python environment with dependencies installed** — set up `.venv` and install `requirements.txt`. Step-by-step instructions in [USAGE.md §1](USAGE.md).
+1. **Python environment with dependencies installed** — set up `.venv` and install `requirements.txt` (includes `fsspec`/`gcsfs` for GCS support). Step-by-step instructions in [USAGE.md §1](USAGE.md).
 
-2. **`RawData/` folder** — one or more ASMS results CSV files, each named in the convention `asms_<provider>_<batch>_<library>_<YYYYMMDD>.csv`. Every CSV in this folder is processed.
+2. **Raw data** — one ASMS results CSV, or a folder of them. Each file is named in the convention `asms_<provider>_<batch>_<library>_<YYYYMMDD>.csv`. Point at it with **`--input-file`** (a single CSV) or **`--input-dir`** (a folder; every `*.csv` in it is processed). Paths may be local or `gs://`.
 
-3. **`MasterLists/` folder** containing:
-   - `MasterList_Information.xlsx` — required mapping file (columns `FileName`, `MaterListName`) that links each raw CSV to its master list.
-   - One `.xlsx` per registered compound library referenced above (each must contain at least a `SMILES` column).
+3. **`MasterLists/` folder** — one file per compound library, named `<LIBRARY_NAME>.xlsx` **or** `<LIBRARY_NAME>.csv` (each must contain at least a `SMILES` column, ideally `formula` too). The library for a given raw file is resolved directly from its `LIBRARY_NAME` column — **no mapping file needed**. Default location: this repo's `MasterLists/`; override with `--masterlists-dir`.
 
-4. **`Providers.csv`** — list of valid provider acronyms and data-generator names. The real file is gitignored (private company info); copy [Providers_sample.csv](Providers_sample.csv) to `Providers.csv` and replace the entries with real values. Required columns: `acronym`, `name`, `data_generator_name`.
+4. **`Providers.csv`** — valid provider acronyms and data-generator names (columns `acronym`, `name`, `data_generator_name`). The real file is gitignored (private company info); copy [Providers_sample.csv](Providers_sample.csv) to `Providers.csv` and fill in real values. Default location: this repo root; override with `--providers-csv`.
 
-5. **`ASMS Meta Data.csv`** — canonical column-name reference. The first row lists every column name a raw ASMS CSV must contain; the second row holds data types (informational only). QC fails a file when its columns don't exactly match this list.
+5. **`ASMS Meta Data.csv`** — canonical column-name reference. Row 1 lists every column name a raw CSV must contain; row 2 holds data types (informational only). QC fails a file when its columns don't match this list. Default location: this repo root; override with `--meta-csv`.
 
-Expected layout:
-
-```
-<input-dir>/
-├── RawData/
-│   ├── asms_<provider>_<batch>_<library>_<YYYYMMDD>.csv
-│   └── ...
-├── MasterLists/
-│   ├── MasterList_Information.xlsx
-│   ├── <library1>.xlsx
-│   └── <library2>.xlsx
-├── Providers.csv
-└── ASMS Meta Data.csv
-```
+By default, the **config/reference files (3–5) are read from this repo** — so you only need to point `--input-file`/`--input-dir` at the data. Each can be overridden to a shared folder or a `gs://` path. See [USAGE.md](USAGE.md) for the full flag list and examples.
 
 ## Data Inputs (file formats)
 
-### `RawData/`
+### Raw data (`--input-file` / `--input-dir`)
 
-One or more **ASMS results CSV files**. Each row is a compound–protein measurement with target/non-target intensities, replicates, pool info, and protein metadata. Every CSV in this folder is processed. The required column names are defined by `ASMS Meta Data.csv` (see below).
+**ASMS results CSV files.** Each row is a compound–protein measurement with target/non-target intensities, replicates, pool info, and protein metadata. Pass a single file with `--input-file`, or a folder of CSVs with `--input-dir` (every `*.csv` in it is processed — no special subfolder name required). The required column names are defined by `ASMS Meta Data.csv` (see below).
 
 ### `MasterLists/`
 
-Excel files describing the compound libraries used in the screen. This folder must contain:
+One file per compound library used in the screen, named after the library:
 
-- **`MasterList_Information.xlsx`** (required). Maps each raw-data CSV to its corresponding master list. Must have two columns:
-  - `FileName` — the filename of a CSV in `RawData/` (e.g. `asms_acmecorp_01_Chemdiv9k_20260512.csv`)
-  - `MaterListName` — the base name (no extension) of the matching master list `.xlsx` file in `MasterLists/`
+- **`<LIBRARY_NAME>.xlsx` or `<LIBRARY_NAME>.csv`** (e.g. `Chemdiv9k.csv`). Each must contain at least a `SMILES` column and a `formula` column; optional `COMPOUND_ID` / `SGC ID for Component` and `SGC ID for Pool` columns are copied onto negative samples when present. Used to draw negative samples and to validate input SMILES / formulas.
 
-- **One `.xlsx` per master list referenced above** (e.g. `Chemdiv9k.xlsx`). Each must contain at least a `SMILES` column and a `formula` column. Used to draw negative samples for the model and to validate input SMILES / formulas.
+The library for a given raw file is found by reading its **`LIBRARY_NAME`** column and loading `<LIBRARY_NAME>.xlsx`/`.csv` from `MasterLists/` (`.xlsx` wins if both exist). There is **no `MasterList_Information.xlsx` mapping file** — just make sure the matching library file exists.
 
 ### `Providers.csv`
 
@@ -98,18 +82,20 @@ To change which columns are required, edit `ASMS Meta Data.csv` directly — no 
 
 ## Sample Data
 
-For reference, the repo includes two small placeholder folders:
+For reference, the repo includes two small placeholder folders that show the expected file layout and naming:
 
-- [RawData_sample/](RawData_sample/)
-- [MasterLists_sample/](MasterLists_sample/)
+- [RawData_sample/](RawData_sample/) — example raw CSV(s); point `--input-dir` at this folder (or `--input-file` at a file inside it) to try the pipeline.
+- [MasterLists_sample/](MasterLists_sample/) — example library file(s); pass `--masterlists-dir MasterLists_sample` to use them.
 
-These show the expected file layout and naming. **They are not picked up by the pipeline automatically** — `Main.py` only reads from `RawData/` and `MasterLists/`. To use them, either:
+Your real raw-data and `MasterLists/` folders and the generated `ProcessedData_*/` folders are gitignored — only the `_sample` versions are tracked in this repo.
 
-1. Rename the folders by dropping the `_sample` suffix:
-   ```powershell
-   Rename-Item RawData_sample RawData
-   Rename-Item MasterLists_sample MasterLists
-   ```
-2. Or copy/move the sample files into your own `RawData/` and `MasterLists/` folders.
+## What's new
 
-Your real `RawData/`, `MasterLists/`, and the generated `ProcessedData_*/` folders are all gitignored — only the `_sample` versions are tracked in this repo.
+Recent changes to the pipeline:
+
+- **Local *and* Google Cloud Storage** — pass local paths or `gs://` URLs anywhere; the code auto-detects. See the GCP section in [USAGE.md](USAGE.md).
+- **File or folder input** — `--input-file` for one CSV, `--input-dir` for a folder. The old required `RawData/` subfolder is gone; output `ProcessedData_<name>/` is created next to the input (or at `--output-dir`).
+- **Config as input** — `MasterLists/`, `Providers.csv`, `ASMS Meta Data.csv` default to this repo and are each overridable (`--masterlists-dir`, `--providers-csv`, `--meta-csv`), including to `gs://`.
+- **Masterlist resolution simplified** — the library is read from the `LIBRARY_NAME` column; `MasterList_Information.xlsx` is no longer used. Master lists may be `.xlsx` **or** `.csv`.
+- **Column updates** — units added to `INCUBATION_VOLUME (uL)`, `PROTEIN_CONC (uM)`, `COMPOUND_CONC (uM)`, `RT (min)`; `MS_REPRODUCIBILITY` spelling corrected; new `PROTEIN_NAME` (VARCHAR) column with checks.
+- **CHIRAL_SELECTIVITY report** — failing rows are written to `chiral_selectivity_not_allowed_report.csv` for investigation (the QC log keeps just the count).

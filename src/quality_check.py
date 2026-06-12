@@ -16,6 +16,7 @@ from datetime import datetime
 import pandas as pd
 from rdkit import Chem
 from rdkit import RDLogger
+from io_utils import pjoin, listdir, makedirs, exists, isdir, getsize, open_file
 
 # RDKit normally prints noisy errors on bad SMILES to stderr; we report them
 # in the QC log instead, so silence its built-in logger here.
@@ -53,7 +54,7 @@ def _load_providers(providers_csv_path):
 
     Returns a list of lowercase strings, or None if the file is missing.
     """
-    if not providers_csv_path or not os.path.exists(providers_csv_path):
+    if not providers_csv_path or not exists(providers_csv_path):
         return None
     try:
         df = pd.read_csv(providers_csv_path)
@@ -72,7 +73,7 @@ def _load_data_generators(providers_csv_path):
     Returns an empty set if the column is absent (older Providers.csv files
     that haven't been extended yet).
     """
-    if not providers_csv_path or not os.path.exists(providers_csv_path):
+    if not providers_csv_path or not exists(providers_csv_path):
         return None
     try:
         df = pd.read_csv(providers_csv_path)
@@ -88,10 +89,10 @@ def _list_libraries(masterlist_dir):
     MasterList_Information.xlsx mapping file is excluded so it isn't mistaken
     for a library if still present. None if directory is missing.
     """
-    if not masterlist_dir or not os.path.isdir(masterlist_dir):
+    if not masterlist_dir or not isdir(masterlist_dir):
         return None
     libs = []
-    for name in os.listdir(masterlist_dir):
+    for name in listdir(masterlist_dir):
         if name == "MasterList_Information.xlsx":
             continue
         stem, ext = os.path.splitext(name)
@@ -135,7 +136,7 @@ def _load_associated_library_df(df, masterlist_dir):
     exist). Column existence is checked by the callers since different checks
     need different columns.
     """
-    if not (masterlist_dir and os.path.isdir(masterlist_dir)):
+    if not (masterlist_dir and isdir(masterlist_dir)):
         return None
     lib_name = _resolve_library_name(df)
     if not lib_name:
@@ -143,8 +144,8 @@ def _load_associated_library_df(df, masterlist_dir):
     # Accept either a .xlsx or .csv library file (xlsx wins if both exist).
     lib_path = None
     for ext in (".xlsx", ".csv"):
-        candidate = os.path.join(masterlist_dir, f"{lib_name}{ext}")
-        if os.path.exists(candidate):
+        candidate = pjoin(masterlist_dir, f"{lib_name}{ext}")
+        if exists(candidate):
             lib_path = candidate
             break
     if lib_path is None:
@@ -189,7 +190,7 @@ def _load_varchar_columns(meta_csv_path):
     pandas doesn't auto-cast numeric-looking string columns (e.g. EXPERIMENT_DATE
     values like `20250512`) to integers.
     """
-    if not meta_csv_path or not os.path.exists(meta_csv_path):
+    if not meta_csv_path or not exists(meta_csv_path):
         return set()
     try:
         df = pd.read_csv(meta_csv_path, header=None, nrows=2)
@@ -236,7 +237,7 @@ def _load_meta_columns(meta_csv_path):
 
     Returns a list of strings, or None if the file is missing/unreadable.
     """
-    if not meta_csv_path or not os.path.exists(meta_csv_path):
+    if not meta_csv_path or not exists(meta_csv_path):
         return None
     try:
         df = pd.read_csv(meta_csv_path, nrows=0)
@@ -255,7 +256,7 @@ def _load_meta_columns(meta_csv_path):
 def check_file_opens(file_path, **_):
     """File can be opened for reading."""
     try:
-        with open(file_path, "rb") as f:
+        with open_file(file_path, "rb") as f:
             f.read(1)
     except OSError as e:
         return False, f"could not open file: {e}"
@@ -273,7 +274,7 @@ def check_is_csv(file_path, **_):
 def check_file_not_empty(file_path, **_):
     """File size is greater than zero bytes."""
     try:
-        size = os.path.getsize(file_path)
+        size = getsize(file_path)
     except OSError as e:
         return False, f"could not stat file: {e}"
     if size == 0:
@@ -284,7 +285,7 @@ def check_file_not_empty(file_path, **_):
 def check_file_size_under_limit(file_path, **_):
     """File size is below the configured limit (default 10 GB)."""
     try:
-        size = os.path.getsize(file_path)
+        size = getsize(file_path)
     except OSError as e:
         return False, f"could not stat file: {e}"
     if size > MAX_FILE_SIZE_BYTES:
@@ -302,7 +303,7 @@ def check_encoding_is_utf8(file_path, chunk_size=1024 * 1024, **_):
     """File contents decode cleanly as UTF-8 (reads the whole file in chunks)."""
     decoder = codecs.getincrementaldecoder("utf-8")()
     try:
-        with open(file_path, "rb") as f:
+        with open_file(file_path, "rb") as f:
             while True:
                 chunk = f.read(chunk_size)
                 if not chunk:
@@ -329,7 +330,7 @@ def check_csv_parseable(file_path, **_):
     # Count total data rows (line count minus header). Streamed so it stays
     # cheap even for multi-GB files.
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open_file(file_path, "r", encoding="utf-8") as f:
             line_count = sum(1 for _ in f)
         rows_msg = f"{max(line_count - 1, 0):,} rows"
     except OSError:
@@ -495,10 +496,10 @@ def check_no_duplicate_rows(file_path, output_dir=None, **_):
     report_msg = ""
     if output_dir:
         try:
-            os.makedirs(output_dir, exist_ok=True)
+            makedirs(output_dir, exist_ok=True)
             report_df = df[df.duplicated(keep=False)].copy()
             report_df.insert(0, "FileLine", report_df.index + 2)  # +2: 1-index + header
-            report_path = os.path.join(output_dir, "FullyDuplicate_rows_report.csv")
+            report_path = pjoin(output_dir, "FullyDuplicate_rows_report.csv")
             report_df.to_csv(report_path, index=False)
             report_msg = f"; report saved to {report_path}"
         except Exception as e:
@@ -793,10 +794,10 @@ def _check_no_duplicates_per_group(df, column, group_col, output_dir):
     reports = []
     if output_dir:
         try:
-            os.makedirs(output_dir, exist_ok=True)
+            makedirs(output_dir, exist_ok=True)
             for group_val, group_rows in dup_df.groupby(group_col):
                 safe = re.sub(r"[^A-Za-z0-9_.\-]", "_", str(group_val))
-                report_path = os.path.join(
+                report_path = pjoin(
                     output_dir, f"duplicate_{column}_per_{group_col}_{safe}.csv"
                 )
                 group_rows.to_csv(report_path, index=False)
@@ -904,7 +905,7 @@ def check_smiles_valid(file_path, df=None, output_dir=None, **_):
     report_msg = ""
     if output_dir:
         try:
-            os.makedirs(output_dir, exist_ok=True)
+            makedirs(output_dir, exist_ok=True)
             offending_indices = sorted(set(empty_rows) | {i for i, _ in malformed_rows})
             bad_part_for = {i: p for i, p in malformed_rows}
             report_df = df.loc[offending_indices].copy()
@@ -913,7 +914,7 @@ def check_smiles_valid(file_path, df=None, output_dir=None, **_):
                 ["empty" if i in set(empty_rows) else f"malformed: '{bad_part_for[i]}'"
                  for i in offending_indices],
             )
-            report_path = os.path.join(output_dir, "invalid_smiles_report.csv")
+            report_path = pjoin(output_dir, "invalid_smiles_report.csv")
             report_df.to_csv(report_path, index=False)
             report_msg = f"; report saved to {os.path.basename(report_path)}"
         except Exception as e:
@@ -963,12 +964,12 @@ def check_smiles_in_library(file_path, df=None, masterlist_dir=None, output_dir=
     report_msg = ""
     if output_dir:
         try:
-            os.makedirs(output_dir, exist_ok=True)
+            makedirs(output_dir, exist_ok=True)
             offending_indices = sorted({i for i, _ in missing_rows})
             missing_part_for = {i: p for i, p in missing_rows}
             report_df = df.loc[offending_indices].copy()
             report_df.insert(0, "MissingPart", [missing_part_for[i] for i in offending_indices])
-            report_path = os.path.join(output_dir, "smiles_not_in_library_report.csv")
+            report_path = pjoin(output_dir, "smiles_not_in_library_report.csv")
             report_df.to_csv(report_path, index=False)
             report_msg = f"; report saved to {os.path.basename(report_path)}"
         except Exception as e:
@@ -1077,12 +1078,12 @@ def check_compound_formula_in_library(file_path, df=None, masterlist_dir=None,
     report_msg = ""
     if output_dir:
         try:
-            os.makedirs(output_dir, exist_ok=True)
+            makedirs(output_dir, exist_ok=True)
             offending = sorted({i for i, _ in missing_rows})
             missing_part_for = {i: p for i, p in missing_rows}
             report_df = df.loc[offending].copy()
             report_df.insert(0, "MissingFormula", [missing_part_for[i] for i in offending])
-            report_path = os.path.join(output_dir, "formula_not_in_library_report.csv")
+            report_path = pjoin(output_dir, "formula_not_in_library_report.csv")
             report_df.to_csv(report_path, index=False)
             report_msg = f"; report saved to {os.path.basename(report_path)}"
         except Exception as e:
@@ -1443,10 +1444,10 @@ def check_chiral_selectivity_in_allowed(file_path, df=None, output_dir=None, **_
     report_msg = ""
     if output_dir:
         try:
-            os.makedirs(output_dir, exist_ok=True)
+            makedirs(output_dir, exist_ok=True)
             report_df = df.loc[bad.index].copy()
             report_df.insert(0, "RowIndex", bad.index)
-            report_path = os.path.join(output_dir, "chiral_selectivity_not_allowed_report.csv")
+            report_path = pjoin(output_dir, "chiral_selectivity_not_allowed_report.csv")
             report_df.to_csv(report_path, index=False)
             report_msg = f"; offending rows saved to {os.path.basename(report_path)}"
         except Exception as e:
@@ -2221,11 +2222,11 @@ def run_quality_checks(file_path, log_dir, providers_csv=None, masterlist_dir=No
             (description, message) pairs for every check that failed; empty
             when all_passed is True.
     """
-    os.makedirs(log_dir, exist_ok=True)
+    makedirs(log_dir, exist_ok=True)
     file_name = os.path.basename(file_path)
     base_name = os.path.splitext(file_name)[0]
     today = datetime.now().strftime("%Y%m%d")
-    log_path = os.path.join(log_dir, f"QCaircheck{today}_{base_name}.log")
+    log_path = pjoin(log_dir, f"QCaircheck{today}_{base_name}.log")
 
     # Pre-load context that several checks need. `output_dir` lets checks
     # write supplementary files (e.g. FullyDuplicate_rows_report.csv) next to the log.
@@ -2254,7 +2255,7 @@ def run_quality_checks(file_path, log_dir, providers_csv=None, masterlist_dir=No
     rows = []            # accumulated for the Excel report
     check_idx = 0
     generated_at = datetime.now().isoformat(timespec="seconds")
-    with open(log_path, "w", encoding="utf-8") as log:
+    with open_file(log_path, "w", encoding="utf-8") as log:
         log.write("Quality Check Log\n")
         log.write(f"File:      {file_name}\n")
         log.write(f"Generated: {generated_at}\n")
@@ -2308,7 +2309,7 @@ def run_quality_checks(file_path, log_dir, providers_csv=None, masterlist_dir=No
             log.write(f"(Statistics summary failed to render: {e})\n")
 
     # Write the Excel companion next to the .log
-    excel_path = os.path.join(log_dir, f"QCaircheck{today}_{base_name}.xlsx")
+    excel_path = pjoin(log_dir, f"QCaircheck{today}_{base_name}.xlsx")
     try:
         _write_excel_report(
             rows=rows,
@@ -2320,7 +2321,7 @@ def run_quality_checks(file_path, log_dir, providers_csv=None, masterlist_dir=No
         )
     except Exception as e:
         # Excel write failure should not block QC; record in log
-        with open(log_path, "a", encoding="utf-8") as log:
+        with open_file(log_path, "a", encoding="utf-8") as log:
             log.write(f"\n(Note: failed to write Excel report: {e})\n")
 
     return all_passed, failed_checks
@@ -2444,4 +2445,5 @@ def _write_excel_report(rows, excel_path, file_name, generated_at, overall_statu
         stats_ws.column_dimensions["D"].width = 16
         stats_ws.column_dimensions["E"].width = 16
 
-    wb.save(excel_path)
+    with open_file(excel_path, "wb") as f:
+        wb.save(f)
