@@ -12,7 +12,14 @@ Computes `MW`, `ALOGP`, and the nine HitGen fingerprints per row from the
   * Compute on the set of **unique** SMILES and map results back to rows, so
     duplicate SMILES (negatives, repeated compounds, isomer expansion) are
     computed only once.
+  * Fan the whole per-molecule cost (parse + MW/ALOGP + all 9 fingerprints) out
+    across a single process pool, so parsing and featurization run in parallel
+    on every core (RDKit holds the GIL, so processes, not threads). One pool for
+    the whole step — not one per fingerprint.
 """
+
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
 
 import numpy as np
 from rdkit.Chem import Descriptors
@@ -20,6 +27,7 @@ import pandas as pd
 from fingerprints import (
     HitGenMACCS, HitGenECFP4, HitGenECFP6, HitGenFCFP4, HitGenFCFP6,
     HitGenRDK, HitGenAvalon, HitGenTopTor, HitGenAtomPair,
+    _chunk, _default_n_jobs, _PARALLEL_MIN_ITEMS,
 )
 from utils import to_mol
 
@@ -46,6 +54,32 @@ def _row_to_string(row):
     return ",".join("nan" if v != v else str(int(v)) for v in row)
 
 
+def _featurize_chunk(smiles_chunk, fp_format):
+    """Worker: featurize one chunk of UNIQUE SMILES.
+
+    Parses each SMILES in the chunk once, then computes MW, ALOGP and every
+    fingerprint from that single Mol. Generators run serially here (n_jobs=1) so
+    there is no nested parallelism inside a worker. Defined at module level so
+    ProcessPoolExecutor can pickle it.
+
+    Returns (mw_array, alogp_array, {fp_name: [per-molecule value, ...]}) for the
+    chunk, in order. Per-molecule values are float32 arrays ("array" format) or
+    comma-separated strings ("string" format).
+    """
+    mols = [to_mol(s) for s in smiles_chunk]
+    mw = np.array([Descriptors.MolWt(m) if m is not None else np.nan for m in mols])
+    alogp = np.array([Descriptors.MolLogP(m) if m is not None else np.nan for m in mols])
+
+    fps = {}
+    for name, fp in FINGERPRINT_CLASSES.items():
+        arr = fp.generate_fps(mols, n_jobs=1)   # serial within the worker
+        if fp_format == "string":
+            fps[name] = [_row_to_string(r) for r in arr]
+        else:
+            fps[name] = [r.astype(np.float32) for r in arr]
+    return mw, alogp, fps
+
+
 def extract_fingerprints(df, fp_format="array"):
     """Extracts molecular fingerprints and molecular properties for a DataFrame.
 
@@ -64,29 +98,44 @@ def extract_fingerprints(df, fp_format="array"):
     # Unique SMILES → per-row code mapping. use_na_sentinel=False keeps NaN as
     # its own unique entry (rather than code -1).
     codes, uniques = pd.factorize(df["SMILES"], use_na_sentinel=False)
+    uniques = list(uniques)
 
-    # Parse each unique SMILES once. to_mol returns a Mol for valid SMILES,
-    # passes existing Mols through, and yields None for invalid/NaN input.
-    mols = [to_mol(s) for s in uniques]
+    # Featurize each UNIQUE molecule once, fanned out across one process pool:
+    # each worker parses its chunk's SMILES and computes MW/ALOGP + all 9
+    # fingerprints. Below the threshold (or on any failure) we run serially.
+    n_jobs = _default_n_jobs()
+    n_jobs = min(n_jobs, len(uniques)) if uniques else 1
 
-    # Molecular properties per unique molecule.
-    mw_u = np.array([Descriptors.MolWt(m) if m is not None else np.nan for m in mols])
-    alogp_u = np.array([Descriptors.MolLogP(m) if m is not None else np.nan for m in mols])
+    results = None
+    if n_jobs > 1 and len(uniques) >= _PARALLEL_MIN_ITEMS:
+        try:
+            worker = partial(_featurize_chunk, fp_format=fp_format)
+            with ProcessPoolExecutor(max_workers=n_jobs) as ex:
+                results = list(ex.map(worker, _chunk(uniques, n_jobs)))
+        except Exception as e:
+            # Never let parallelism break the pipeline -- fall back to serial.
+            print(f"  [fingerprints] parallel featurization failed "
+                  f"({type(e).__name__}: {e}); falling back to serial.")
+            results = None
+
+    if results is not None:
+        # Reassemble per-unique results in chunk order.
+        mw_u = np.concatenate([r[0] for r in results])
+        alogp_u = np.concatenate([r[1] for r in results])
+        per_unique = {name: [] for name in FINGERPRINT_CLASSES}
+        for r in results:
+            for name in FINGERPRINT_CLASSES:
+                per_unique[name].extend(r[2][name])
+    else:
+        mw_u, alogp_u, per_unique = _featurize_chunk(uniques, fp_format)
 
     out = df.copy()
     # Map unique-level results back to every row via the factorize codes
     # (positional assignment — independent of the DataFrame index).
     out["MW"] = mw_u[codes]
     out["ALOGP"] = alogp_u[codes]
-
-    # Each generator runs once over all unique mols → (U, dimension) array.
-    # None mols come back as a row of NaN (handled inside generate_fps).
-    for name, fp in FINGERPRINT_CLASSES.items():
-        fps_u = fp.generate_fps(mols)
-        if fp_format == "string":
-            per_unique = [_row_to_string(r) for r in fps_u]
-        else:
-            per_unique = [r.astype(np.float32) for r in fps_u]
-        out[name] = [per_unique[c] for c in codes]
+    for name in FINGERPRINT_CLASSES:
+        pu = per_unique[name]
+        out[name] = [pu[c] for c in codes]
 
     return out

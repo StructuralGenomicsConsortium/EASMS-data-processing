@@ -4,7 +4,10 @@ RawData/
 MasterLists/
 
 # Provider list (real version contains private company info; sample is tracked)
-Providers.csv
+# Providers.csv
+
+# Local config for the Makefile (real values; .env.example is tracked)
+.env
 
 # Local-only scratch / unused scripts
 src/tempfiles/
@@ -25,3 +28,6 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+.claude/
+CLAUDE.*
+easms-curation/

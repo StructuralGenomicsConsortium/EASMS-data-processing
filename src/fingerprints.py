@@ -2,6 +2,8 @@ from typing import Union, List, Callable, Optional
 from functools import partial
 import inspect
 import abc
+import os
+from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 import numpy.typing as npt
@@ -13,6 +15,32 @@ from rdkit.Chem.AtomPairs import Pairs
 from rdkit import Chem
 
 from utils import to_mol, catch_boost_argument_error
+
+
+# --- Parallel fingerprint generation -------------------------------------
+# RDKit holds the GIL during fingerprint computation, so threads give no real
+# speedup; we fan out across processes instead. Tunable via the FP_N_JOBS env
+# var (defaults to all CPUs). Inputs below _PARALLEL_MIN_ITEMS run serially,
+# since process spin-up + pickling would cost more than it saves.
+_PARALLEL_MIN_ITEMS = 512
+
+
+def _default_n_jobs() -> int:
+    """Worker count for parallel FP generation: ``$FP_N_JOBS`` if set, else all CPUs."""
+    env = os.environ.get("FP_N_JOBS")
+    if env:
+        try:
+            return max(1, int(env))
+        except ValueError:
+            pass
+    return os.cpu_count() or 1
+
+
+def _chunk(seq: List, n: int) -> List[List]:
+    """Split ``seq`` into ``n`` contiguous, order-preserving chunks."""
+    n = max(1, min(n, len(seq)))
+    k, m = divmod(len(seq), n)
+    return [seq[i * k + min(i, m):(i + 1) * k + min(i + 1, m)] for i in range(n)]
 
 
 def _wrap_handle_none(fp_func: Callable, *args, fail_size: Optional[int] = None, **kwargs) -> List:
@@ -72,6 +100,20 @@ def _wrap_handle_none(fp_func: Callable, *args, fail_size: Optional[int] = None,
             raise
 
 
+def _generate_fps_chunk(fp_cls, items, dimension):
+    """Worker for parallel FP generation.
+
+    Rebuilds the FP function from its class (cheaper and safer to pickle than the
+    underlying RDKit partial) and computes fingerprints for one chunk of inputs.
+    Defined at module level so ``ProcessPoolExecutor`` can pickle it.
+    """
+    fp = fp_cls()
+    return [
+        _wrap_handle_none(fp._func, to_mol(c), fail_size=dimension)
+        for c in items
+    ]
+
+
 class BaseFPFunc(abc.ABC):
     """
     Base class for all FP functions used in any AIRCHECK pipeline
@@ -102,13 +144,42 @@ class BaseFPFunc(abc.ABC):
         self._binary: bool = False
         self._dimension: int = -1
 
-    def __call__(self, smis, *args, use_tqdm: bool = False, **kwargs) -> npt.NDArray[np.int32]:
+    def __call__(self, smis, *args, use_tqdm: bool = False,
+                 n_jobs: Optional[int] = None, **kwargs) -> npt.NDArray[np.int32]:
+        items = list(np.atleast_1d(smis))
+        if n_jobs is None:
+            n_jobs = _default_n_jobs()
+        n_jobs = min(n_jobs, len(items)) if items else 1
+
+        # Parallel path: fan the per-molecule loop out across processes.
+        if n_jobs > 1 and len(items) >= _PARALLEL_MIN_ITEMS:
+            try:
+                worker = partial(_generate_fps_chunk, self.__class__,
+                                 dimension=self._dimension)
+                rows = []
+                with ProcessPoolExecutor(max_workers=n_jobs) as ex:
+                    for chunk_rows in ex.map(worker, _chunk(items, n_jobs)):
+                        rows.extend(chunk_rows)
+                return np.array(rows)
+            except Exception as e:
+                # Never let parallelism break the pipeline -- fall back to serial.
+                print(f"  [fingerprints] parallel FP generation failed "
+                      f"({type(e).__name__}: {e}); falling back to serial.")
+
+        # Serial path (also used for small inputs / when n_jobs == 1).
         return np.array(
             [
                 _wrap_handle_none(self._func, to_mol(c), fail_size=self._dimension)
-                for c in tqdm(np.atleast_1d(smis), disable=not use_tqdm)
+                for c in tqdm(items, disable=not use_tqdm)
             ]
         )
+
+    def __reduce__(self):
+        # Concrete FP funcs take no constructor args and rebuild their RDKit
+        # callable in __init__, so they pickle as "call the class". This lets a
+        # ProcessPoolExecutor ship the FP func to workers without having to
+        # pickle the underlying RDKit partial (which is not reliably picklable).
+        return (self.__class__, ())
 
     def __eq__(self, other) -> bool:
         if isinstance(other, BaseFPFunc):
@@ -123,6 +194,7 @@ class BaseFPFunc(abc.ABC):
         self,
         smis: Union[str, Chem.rdchem.Mol, List[Union[str, Chem.rdchem.Mol]]],
         use_tqdm: bool = False,
+        n_jobs: Optional[int] = None,
     ) -> np.ndarray:
         """
         Generate Fingerprints for a set of smiles
@@ -132,6 +204,9 @@ class BaseFPFunc(abc.ABC):
             the SMILES or Mol objects (or multiple SMILES/Mol objects) you want to generate a fingerprint(s) for
         use_tqdm : bool, default: False
             have a tqdm task to track progress
+        n_jobs : int or None, default: None
+            number of worker processes to use. None = all CPUs (or $FP_N_JOBS);
+            1 forces serial. Small inputs always run serially regardless.
 
         Returns
         -------
@@ -146,7 +221,7 @@ class BaseFPFunc(abc.ABC):
         This function just wraps the __call__ method of the class
 
         """
-        return self.__call__(smis, use_tqdm)
+        return self.__call__(smis, use_tqdm=use_tqdm, n_jobs=n_jobs)
 
     def to_dict(self) -> dict:
         """
