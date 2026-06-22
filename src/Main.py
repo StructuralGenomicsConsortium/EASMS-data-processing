@@ -7,10 +7,10 @@ test
 """
 
 
-
 import os
+import time
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
 from io_utils import pjoin, listdir, makedirs, dirname, isdir
 from separate_protein_files import split_protein_data
@@ -23,6 +23,10 @@ from fingerprint_extraction import extract_fingerprints
 from column_selection import select_final_columns
 from quality_check import run_quality_checks
 from post_quality_check import run_post_quality_checks
+
+os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
+os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "1")
+
 
 STEP_FOLDERS = {
     1: "Step1_Separated",
@@ -56,6 +60,25 @@ def _step_input_files(start_from, step_dirs, scored_files):
     )
 
 
+def _resolve_ref_file(arg_value, filename, repo_root):
+    """Resolve a bundled reference file (e.g. Providers.csv, ASMS Meta Data.csv).
+
+    Returns the explicit CLI value when given (local path or gs:// URL).
+    Otherwise looks for `filename` next to the app -- `repo_root` (which is
+    `/app` inside the Docker image) and the current working directory -- and
+    returns the first that exists, so the bundled file is found the same way
+    whether the pipeline runs locally or inside the container. Falls back to the
+    repo_root path if neither exists (so QC reports a sensible location).
+    """
+    if arg_value:
+        return arg_value
+    for base in (repo_root, os.getcwd()):
+        candidate = os.path.join(base, filename)
+        if os.path.exists(candidate):
+            return candidate
+    return os.path.join(repo_root, filename)
+
+
 def process_csv_files(input_files, masterlist_path, output_dir, providers_csv,
                       DesiredColumns, DesiredColumns2,
                       start_from=0, end_at=9, meta_csv=None, fp_format="array"):
@@ -79,7 +102,8 @@ def process_csv_files(input_files, masterlist_path, output_dir, providers_csv,
         processed_data_dir = pjoin(output_dir, f"ProcessedData_{csv_basename}")
         makedirs(processed_data_dir, exist_ok=True)
 
-        step_dirs = {n: pjoin(processed_data_dir, name) for n, name in STEP_FOLDERS.items()}
+        step_dirs = {n: pjoin(processed_data_dir, name)
+                     for n, name in STEP_FOLDERS.items()}
 
         # Step 0: QC (only when start-from == 0)
         if start_from <= 0:
@@ -91,7 +115,8 @@ def process_csv_files(input_files, masterlist_path, output_dir, providers_csv,
                 meta_csv=meta_csv,
             )
             if not qc_passed:
-                log_path = pjoin(processed_data_dir, f"QCaircheck{datetime.now().strftime('%Y%m%d')}_{csv_basename}.log")
+                log_path = pjoin(
+                    processed_data_dir, f"QCAIRCHECK{datetime.now().strftime('%Y%m%d')}_{csv_basename}.log")
                 bar = "=" * 70
                 print()
                 print(bar)
@@ -104,7 +129,8 @@ def process_csv_files(input_files, masterlist_path, output_dir, providers_csv,
                     print(f"        {msg}")
                 print()
                 print(f"  Full log: {log_path}")
-                print(f"  Skipping {file_name} -- no downstream steps will run.")
+                print(
+                    f"  Skipping {file_name} -- no downstream steps will run.")
                 print(bar)
                 print()
                 continue
@@ -129,7 +155,8 @@ def process_csv_files(input_files, masterlist_path, output_dir, providers_csv,
         if start_from <= 2:
             makedirs(step_dirs[2], exist_ok=True)
             print("\nComputing and Adding Scores to All Separated Files...\n")
-            scored_files = compute_and_add_scores(separated_files, output_dir=step_dirs[2])
+            scored_files = compute_and_add_scores(
+                separated_files, output_dir=step_dirs[2])
         else:
             scored_files = sorted(
                 pjoin(step_dirs[2], f) for f in listdir(step_dirs[2]) if f.endswith(".csv")
@@ -151,35 +178,41 @@ def process_csv_files(input_files, masterlist_path, output_dir, providers_csv,
 
             # Step 3: filter anomalies
             if start_from <= 3 and end_at >= 3:
-                print(f"    Step 3: filtering anomalies — {base_name}", flush=True)
+                print(
+                    f"    Step 3: filtering anomalies — {base_name}", flush=True)
                 makedirs(step_dirs[3], exist_ok=True)
                 df = filter_anomalous_data(df, f"{base_name}.csv")
                 df.to_csv(pjoin(step_dirs[3], f"{base_name}.csv"), index=False)
 
             # Step 4: handle isomers
             if start_from <= 4 and end_at >= 4:
-                print(f"    Step 4: handling isomers — {base_name}", flush=True)
+                print(
+                    f"    Step 4: handling isomers — {base_name}", flush=True)
                 makedirs(step_dirs[4], exist_ok=True)
                 df = handle_isomers(df, f"{base_name}.csv")
                 df.to_csv(pjoin(step_dirs[4], f"{base_name}.csv"), index=False)
 
             # Step 5: add negative samples
             if start_from <= 5 and end_at >= 5:
-                print(f"    Step 5: adding negative samples — {base_name}", flush=True)
+                print(
+                    f"    Step 5: adding negative samples — {base_name}", flush=True)
                 makedirs(step_dirs[5], exist_ok=True)
-                df = add_negative_samples_from_masterlist(df, file_name, masterlist_path)
+                df = add_negative_samples_from_masterlist(
+                    df, file_name, masterlist_path)
                 df.to_csv(pjoin(step_dirs[5], f"{base_name}.csv"), index=False)
 
             # Step 6: generate ML labels (last CSV step)
             if start_from <= 6 and end_at >= 6:
-                print(f"    Step 6: generating ML labels — {base_name}", flush=True)
+                print(
+                    f"    Step 6: generating ML labels — {base_name}", flush=True)
                 makedirs(step_dirs[6], exist_ok=True)
                 df = generate_ml_labels(df)
                 df.to_csv(pjoin(step_dirs[6], f"{base_name}.csv"), index=False)
 
             # Step 7: extract fingerprints + rename + add binary LABEL (first Parquet step)
             if start_from <= 7 and end_at >= 7:
-                print(f"    Step 7: extracting fingerprints — {base_name} ({len(df)} rows)...", flush=True)
+                print(
+                    f"    Step 7: extracting fingerprints — {base_name} ({len(df)} rows)...", flush=True)
                 makedirs(step_dirs[7], exist_ok=True)
                 df = extract_fingerprints(df, fp_format=fp_format)
                 df = df.rename(columns={
@@ -187,7 +220,8 @@ def process_csv_files(input_files, masterlist_path, output_dir, providers_csv,
                     "MEAN_NONTARGET_VALUES": "NONTARGET_INTENSITY_VALUE",
                 })
                 df["LABEL"] = df["BINARY_LABEL"]
-                df.to_parquet(pjoin(step_dirs[7], f"{base_name}.parquet"), index=False)
+                df.to_parquet(
+                    pjoin(step_dirs[7], f"{base_name}.parquet"), index=False)
 
             # Steps 8 and 9 both read the Step 7 dataframe (parallel branches).
             # select_final_columns returns a new DataFrame, so `df` stays intact
@@ -195,17 +229,21 @@ def process_csv_files(input_files, masterlist_path, output_dir, providers_csv,
 
             # Step 8: select full column set
             if start_from <= 8 and end_at >= 8:
-                print(f"    Step 8: selecting full column set — {base_name}", flush=True)
+                print(
+                    f"    Step 8: selecting full column set — {base_name}", flush=True)
                 makedirs(step_dirs[8], exist_ok=True)
                 df_full = select_final_columns(df, DesiredColumns)
-                df_full.to_parquet(pjoin(step_dirs[8], f"{base_name}.parquet"), index=False)
+                df_full.to_parquet(
+                    pjoin(step_dirs[8], f"{base_name}.parquet"), index=False)
 
             # Step 9: select key (slim) column set
             if start_from <= 9 and end_at >= 9:
-                print(f"    Step 9: selecting key column set — {base_name}", flush=True)
+                print(
+                    f"    Step 9: selecting key column set — {base_name}", flush=True)
                 makedirs(step_dirs[9], exist_ok=True)
                 df_key = select_final_columns(df, DesiredColumns2)
-                df_key.to_parquet(pjoin(step_dirs[9], f"{base_name}.parquet"), index=False)
+                df_key.to_parquet(
+                    pjoin(step_dirs[9], f"{base_name}.parquet"), index=False)
 
         # ---- Post-pipeline QC ----
         # Runs once per input CSV, after every per-target Step 8 Parquet has
@@ -228,9 +266,11 @@ def main(input_files, masterlist_path, output_dir, providers_csv,
                       start_from=start_from, end_at=end_at, meta_csv=meta_csv,
                       fp_format=fp_format)
 
+
 if __name__ == "__main__":
     # Define paths (Modify as needed)
-    parser = argparse.ArgumentParser(description="Run EASMS data processing pipeline.")
+    parser = argparse.ArgumentParser(
+        description="Run EASMS data processing pipeline.")
     # Exactly one of --input-file / --input-dir selects the raw data. Both local
     # paths and gs:// URLs are accepted.
     parser.add_argument(
@@ -258,7 +298,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--providers-csv",
-        default=None,
+        default="./Providers.csv",
         help="Providers.csv path. Default: <repo>/Providers.csv.",
     )
     parser.add_argument(
@@ -284,7 +324,8 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     if args.start_from > args.end_at:
-        parser.error(f"--start-from ({args.start_from}) cannot be greater than --end-at ({args.end_at}).")
+        parser.error(
+            f"--start-from ({args.start_from}) cannot be greater than --end-at ({args.end_at}).")
     if bool(args.input_file) == bool(args.input_dir):
         parser.error("provide exactly one of --input-file or --input-dir.")
 
@@ -302,15 +343,23 @@ if __name__ == "__main__":
             pjoin(args.input_dir, f) for f in listdir(args.input_dir) if f.endswith(".csv")
         )
         if not input_files:
-            parser.error(f"no .csv files found in --input-dir: {args.input_dir}")
+            parser.error(
+                f"no .csv files found in --input-dir: {args.input_dir}")
         default_output_dir = args.input_dir
     output_dir = args.output_dir if args.output_dir else default_output_dir
 
     # Config/reference inputs default to the local repo (parent of this src/ dir).
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    masterlist_path = args.masterlists_dir if args.masterlists_dir else pjoin(repo_root, "MasterLists")
-    providers_csv = args.providers_csv if args.providers_csv else pjoin(repo_root, "Providers.csv")
-    meta_csv = args.meta_csv if args.meta_csv else pjoin(repo_root, "ASMS Meta Data.csv")
+    masterlist_path = args.masterlists_dir if args.masterlists_dir else pjoin(
+        repo_root, "MasterLists")
+    # Providers.csv / ASMS Meta Data.csv default to the bundled copy, found at
+    # repo_root (== /app in Docker) or the current working dir -- so they work
+    # without --providers-csv / --meta-csv in both the container and locally.
+    providers_csv = _resolve_ref_file(
+        args.providers_csv, "Providers.csv", repo_root)
+
+    meta_csv = _resolve_ref_file(
+        args.meta_csv, "ASMS Meta Data.csv", repo_root)
 
     # How fingerprint values are stored in the Step 7+ output columns:
     #   "array"  (default) -> numpy float32 arrays, ready to use directly.
@@ -320,73 +369,89 @@ if __name__ == "__main__":
     TypeOfFp = "array"
 
     DesiredColumns = ['ASMS_BATCH_NAME',
-     'COMPOUND_ID',
-     'COMPOUND_FORMULA',
-     'SMILES',
-     'POOL_NAME',
-     'POOL_ID',
-     'POOL_SIZE',
-     'PROTEIN_NUMBER',
-     'TARGET_ID',
-     'PROTEIN_ID',
-     'PROTEIN_NAME',
-     'PROTEIN_SEQ',
-     'PROTEIN_TAG',
-     'INCUBATION_VOLUME (uL)',
-     'PROTEIN_CONC (uM)',
-     'COMPOUND_CONC (uM)',
-     'MS_REPRODUCIBILITY',
-     'POS_INT_REP1',
-     'POS_INT_REP2',
-     'POS_INT_REP3',
-     'TARGET_INTENSITY_VALUE',
-     'SELECTIVE_VALUE',
-     'NTC_VALUE',
-     'ENRICHMENT',
-     'SELECTIVE_ENRICHMENT',
-     'PVALUE',
-     'BINARY_LABEL',
-     'HAD_DUPLICATE_INTENSITY',
-     'ISOMERS',
-     'MassSpec_Detected',
-     'EASMS_ENRICHMENT',
-     'NONTARGET_INTENSITY_VALUE',
-     'LABEL',
-     'AIRCHECK_LABEL',
-     'MW',
-     'ALOGP',
-     'ECFP4',
-     'ECFP6',
-     'FCFP4',
-     'FCFP6',
-     'MACCS',
-     'RDK',
-     'AVALON',
-     'TOPTOR',
-     'ATOMPAIR']
-    
-    DesiredColumns2 = [
-     'COMPOUND_ID',
-     'SMILES',
-     'TARGET_ID',
-     'TARGET_INTENSITY_VALUE',
-     'NONTARGET_INTENSITY_VALUE',
-     'EASMS_ENRICHMENT',
-     'PVALUE',
-     'LABEL',
-     'MW',
-     'ALOGP',
-     'ECFP4',
-     'ECFP6',
-     'FCFP4',
-     'FCFP6',
-     'MACCS',
-     'RDK',
-     'AVALON',
-     'TOPTOR',
-     'ATOMPAIR']
+                      'COMPOUND_ID',
+                      'COMPOUND_FORMULA',
+                      'SMILES',
+                      'POOL_NAME',
+                      'POOL_ID',
+                      'POOL_SIZE',
+                      'PROTEIN_NUMBER',
+                      'TARGET_ID',
+                      'PROTEIN_ID',
+                      'PROTEIN_NAME',
+                      'PROTEIN_SEQ',
+                      'PROTEIN_TAG',
+                      'INCUBATION_VOLUME (uL)',
+                      'PROTEIN_CONC (uM)',
+                      'COMPOUND_CONC (uM)',
+                      'MS_REPRODUCIBILITY',
+                      'POS_INT_REP1',
+                      'POS_INT_REP2',
+                      'POS_INT_REP3',
+                      'TARGET_INTENSITY_VALUE',
+                      'SELECTIVE_VALUE',
+                      'NTC_VALUE',
+                      'ENRICHMENT',
+                      'SELECTIVE_ENRICHMENT',
+                      'PVALUE',
+                      'BINARY_LABEL',
+                      'HAD_DUPLICATE_INTENSITY',
+                      'ISOMERS',
+                      'MassSpec_Detected',
+                      'EASMS_ENRICHMENT',
+                      'NONTARGET_INTENSITY_VALUE',
+                      'LABEL',
+                      'AIRCHECK_LABEL',
+                      'MW',
+                      'ALOGP',
+                      'ECFP4',
+                      'ECFP6',
+                      'FCFP4',
+                      'FCFP6',
+                      'MACCS',
+                      'RDK',
+                      'AVALON',
+                      'TOPTOR',
+                      'ATOMPAIR']
 
-    main(input_files, masterlist_path, output_dir, providers_csv,
-         DesiredColumns, DesiredColumns2,
-         start_from=args.start_from, end_at=args.end_at, meta_csv=meta_csv,
-         fp_format=TypeOfFp)
+    DesiredColumns2 = [
+        'COMPOUND_ID',
+        'SMILES',
+        'TARGET_ID',
+        'TARGET_INTENSITY_VALUE',
+        'NONTARGET_INTENSITY_VALUE',
+        'EASMS_ENRICHMENT',
+        'PVALUE',
+        'LABEL',
+        'MW',
+        'ALOGP',
+        'ECFP4',
+        'ECFP6',
+        'FCFP4',
+        'FCFP6',
+        'MACCS',
+        'RDK',
+        'AVALON',
+        'TOPTOR',
+        'ATOMPAIR']
+
+    start_perf = time.perf_counter()
+    start_dt = datetime.now()
+    try:
+        main(input_files, masterlist_path, output_dir, providers_csv,
+             DesiredColumns, DesiredColumns2,
+             start_from=args.start_from, end_at=args.end_at, meta_csv=meta_csv,
+             fp_format=TypeOfFp)
+    finally:
+        elapsed = time.perf_counter() - start_perf
+        end_dt = datetime.now()
+        bar = "=" * 70
+        print(f"\n{bar}")
+        print(f"  Total execution time: {timedelta(seconds=round(elapsed))} "
+              f"({elapsed:.1f}s)")
+        print(f"  Started {start_dt:%Y-%m-%d %H:%M:%S}, "
+              f"ended {end_dt:%Y-%m-%d %H:%M:%S}")
+        print(bar)
+
+
+# python main.py --input-file gs://asms_sgc-toronto/data/asms_sgcto_20_EASMS12kV1_20260610.csv --output-dir gs://test-aircheck/asms-test-run --masterlists-dir gs://asms_sgc-toronto/library/EASMS12kV1_lib.csv

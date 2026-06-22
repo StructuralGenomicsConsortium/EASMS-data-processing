@@ -16,7 +16,7 @@ from datetime import datetime
 import pandas as pd
 from rdkit import Chem
 from rdkit import RDLogger
-from io_utils import pjoin, listdir, makedirs, exists, isdir, getsize, open_file
+from io_utils import pjoin, listdir, makedirs, exists, getsize, open_file
 
 # RDKit normally prints noisy errors on bad SMILES to stderr; we report them
 # in the QC log instead, so silence its built-in logger here.
@@ -84,20 +84,88 @@ def _load_data_generators(providers_csv_path):
     return {str(g).strip() for g in df["data_generator_name"].dropna() if str(g).strip()}
 
 
-def _list_libraries(masterlist_dir):
-    """Return library names (filename stems) from MasterLists/. The legacy
-    MasterList_Information.xlsx mapping file is excluded so it isn't mistaken
-    for a library if still present. None if directory is missing.
+# Master-list (library) files are named "<library>_lib.<ext>", e.g.
+# "EASMS12kV1_lib.csv" -> library "EASMS12kV1". Older sets used a bare
+# "<library>.<ext>". Both the trailing "_lib" marker and the extension are
+# stripped to recover the library name.
+_LIBRARY_EXTS = (".xlsx", ".xls", ".csv")
+
+
+def _is_library_file(name):
+    """True if ``name`` has a recognised library-file extension."""
+    return os.path.splitext(name)[1].lower() in _LIBRARY_EXTS
+
+
+def _library_name_from_filename(name):
+    """Library name for a master-list filename: drop the extension and a
+    trailing ``_lib`` marker (``EASMS12kV1_lib.csv`` -> ``EASMS12kV1``)."""
+    stem = os.path.splitext(os.path.basename(name))[0]
+    if stem.lower().endswith("_lib"):
+        stem = stem[:-len("_lib")]
+    return stem
+
+
+def _resolve_library_path(masterlist_dir, lib_name):
+    """Locate the master-list file for ``lib_name`` under ``masterlist_dir``.
+
+    ``masterlist_dir`` may be a single library file *or* a folder of them, on
+    local disk or a remote ``gs://`` URL. Returns the file path, or None if no
+    matching file is found.
     """
-    if not masterlist_dir or not isdir(masterlist_dir):
+    path = masterlist_dir.rstrip("/")
+    # A single library file was given directly (e.g.
+    # gs://bucket/library/EASMS12kV1_lib.csv): use it only if its library name
+    # matches the one declared by the data.
+    if _is_library_file(path):
+        if exists(path) and _library_name_from_filename(path) == lib_name:
+            return path
         return None
+    # A directory of library files: accept "<lib>.<ext>" or "<lib>_lib.<ext>"
+    # (xlsx wins over csv if both exist).
+    for stem in (lib_name, f"{lib_name}_lib"):
+        for ext in _LIBRARY_EXTS:
+            candidate = pjoin(path, f"{stem}{ext}")
+            if exists(candidate):
+                return candidate
+    return None
+
+
+def _list_libraries(masterlist_dir):
+    """Return the available library names from ``masterlist_dir``.
+
+    ``masterlist_dir`` may be a folder of library files *or* a single library
+    file, on local disk or a remote ``gs://`` URL. Files are named
+    ``<library>_lib.{csv,xlsx,xls}`` (e.g. ``EASMS12kV1_lib.csv`` -> library
+    ``EASMS12kV1``); the trailing ``_lib`` marker is stripped. The legacy
+    MasterList_Information.xlsx mapping file is excluded so it isn't mistaken
+    for a library if still present.
+
+    Returns None if the location is missing/unreadable, otherwise the list of
+    library names (possibly empty). NB: ``isdir`` is not used to gate this --
+    it is False when the path points at a single file and is unreliable for GCS
+    prefixes, which is why it "always returned False" for gs:// master lists.
+    """
+    if not masterlist_dir:
+        return None
+
+    path = masterlist_dir.rstrip("/")
+    if _is_library_file(path):
+        # Single library file given directly.
+        if not exists(path):
+            return None
+        names = [os.path.basename(path)]
+    else:
+        try:
+            names = listdir(path)
+        except Exception:
+            return None
+
     libs = []
-    for name in listdir(masterlist_dir):
+    for name in names:
         if name == "MasterList_Information.xlsx":
             continue
-        stem, ext = os.path.splitext(name)
-        if ext.lower() in (".xlsx", ".xls", ".csv"):
-            libs.append(stem)
+        if _is_library_file(name):
+            libs.append(_library_name_from_filename(name))
     return libs
 
 
@@ -131,23 +199,18 @@ def _load_associated_library_df(df, masterlist_dir):
     or None on any failure (missing folder, no resolvable LIBRARY_NAME, library
     file absent).
 
-    The library is resolved from the LIBRARY_NAME column and loaded from
-    `<library>.xlsx` or `<library>.csv` in `masterlist_dir` (xlsx wins if both
-    exist). Column existence is checked by the callers since different checks
-    need different columns.
+    The library is resolved from the LIBRARY_NAME column and located via
+    `_resolve_library_path`, so `masterlist_dir` may be a folder of library
+    files or a single library file, local or remote (`gs://`). Column
+    existence is checked by the callers since different checks need different
+    columns.
     """
-    if not (masterlist_dir and isdir(masterlist_dir)):
+    if not masterlist_dir:
         return None
     lib_name = _resolve_library_name(df)
     if not lib_name:
         return None
-    # Accept either a .xlsx or .csv library file (xlsx wins if both exist).
-    lib_path = None
-    for ext in (".xlsx", ".csv"):
-        candidate = pjoin(masterlist_dir, f"{lib_name}{ext}")
-        if exists(candidate):
-            lib_path = candidate
-            break
+    lib_path = _resolve_library_path(masterlist_dir, lib_name)
     if lib_path is None:
         return None
     try:
@@ -222,7 +285,8 @@ def _load_dataframe(file_path, varchar_columns=None):
         return None
     dtype_arg = {c: str for c in varchar_columns if c in header_only.columns}
     try:
-        df = pd.read_csv(file_path, dtype=dtype_arg) if dtype_arg else pd.read_csv(file_path)
+        df = pd.read_csv(
+            file_path, dtype=dtype_arg) if dtype_arg else pd.read_csv(file_path)
     except Exception:
         return None
     return df.drop_duplicates(keep="first").reset_index(drop=True)
@@ -360,7 +424,7 @@ def check_columns_match_metadata(file_path, meta_columns=None, **_):
     file_set = set(file_cols)
 
     missing = [c for c in meta_columns if c not in file_set]
-    extra   = [c for c in file_cols    if c not in valid]
+    extra = [c for c in file_cols if c not in valid]
 
     if not missing and not extra:
         return True, "columns match ASMS Meta Data.csv reference"
@@ -498,7 +562,8 @@ def check_no_duplicate_rows(file_path, output_dir=None, **_):
         try:
             makedirs(output_dir, exist_ok=True)
             report_df = df[df.duplicated(keep=False)].copy()
-            report_df.insert(0, "FileLine", report_df.index + 2)  # +2: 1-index + header
+            # +2: 1-index + header
+            report_df.insert(0, "FileLine", report_df.index + 2)
             report_path = pjoin(output_dir, "FullyDuplicate_rows_report.csv")
             report_df.to_csv(report_path, index=False)
             report_msg = f"; report saved to {report_path}"
@@ -506,7 +571,8 @@ def check_no_duplicate_rows(file_path, output_dir=None, **_):
             report_msg = f"; failed to write report: {e}"
 
     # 1-indexed line numbers including the header row (so row 0 in df is line 2)
-    dup_line_nums = [int(i) + 2 for i in dup_mask_first[dup_mask_first].index[:5]]
+    dup_line_nums = [
+        int(i) + 2 for i in dup_mask_first[dup_mask_first].index[:5]]
     suffix = f" (and {n_dups - 5} more)" if n_dups > 5 else ""
     return True, (
         f"found {n_dups:,} fully duplicate row(s) "
@@ -541,7 +607,8 @@ def _check_column_is_string(df, column):
     non_null = col.dropna()
     if non_null.empty:
         return True, f"'{column}' is empty (no values to type-check)"
-    bad = sorted({type(v).__name__ for v in non_null if not isinstance(v, str)})
+    bad = sorted(
+        {type(v).__name__ for v in non_null if not isinstance(v, str)})
     if bad:
         # WARN, not FAIL — dtype mismatch is informational (pandas often auto-casts
         # numeric-looking columns to int/float). Value-level checks still run.
@@ -558,7 +625,8 @@ def _check_column_no_whitespace(df, column):
     if not ok:
         return False, fail
     col = df[column].dropna().astype(str)
-    has_ws = col.str.startswith(" ") | col.str.endswith(" ") | col.str.startswith("\t") | col.str.endswith("\t")
+    has_ws = col.str.startswith(" ") | col.str.endswith(
+        " ") | col.str.startswith("\t") | col.str.endswith("\t")
     n = int(has_ws.sum())
     if n == 0:
         return True, f"no leading/trailing whitespace in '{column}'"
@@ -635,7 +703,8 @@ def _check_column_positive(df, column):
         sample = non_positive.dropna().unique()[:5].tolist()
         parts.append(f"{len(non_positive):,} value(s) <= 0 (e.g. {sample})")
     if n_unparseable:
-        parts.append(f"{n_unparseable:,} value(s) could not be parsed as numbers")
+        parts.append(
+            f"{n_unparseable:,} value(s) could not be parsed as numbers")
     return False, f"'{column}': " + "; ".join(parts)
 
 
@@ -692,9 +761,11 @@ def _check_column_at_least(df, column, threshold):
     parts = []
     if not below.empty:
         sample = below.dropna().unique()[:5].tolist()
-        parts.append(f"{len(below):,} value(s) < {threshold:,} (e.g. {sample})")
+        parts.append(
+            f"{len(below):,} value(s) < {threshold:,} (e.g. {sample})")
     if n_unparseable:
-        parts.append(f"{n_unparseable:,} value(s) could not be parsed as numbers")
+        parts.append(
+            f"{n_unparseable:,} value(s) could not be parsed as numbers")
     return False, f"'{column}': " + "; ".join(parts)
 
 
@@ -713,9 +784,11 @@ def _check_column_equals(df, column, expected, atol=1e-9):
     parts = []
     if not not_equal.empty:
         sample = not_equal.unique()[:5].tolist()
-        parts.append(f"{len(not_equal):,} value(s) != {expected} (e.g. {sample})")
+        parts.append(
+            f"{len(not_equal):,} value(s) != {expected} (e.g. {sample})")
     if n_unparseable:
-        parts.append(f"{n_unparseable:,} value(s) could not be parsed as numbers")
+        parts.append(
+            f"{n_unparseable:,} value(s) could not be parsed as numbers")
     return False, f"'{column}': " + "; ".join(parts)
 
 
@@ -745,7 +818,8 @@ def _check_column_in_range(df, column, lo, hi, lo_inclusive=True, hi_inclusive=T
         sample = out_of_range.dropna().unique()[:5].tolist()
         parts.append(f"{n_out:,} value(s) outside {range_str} (e.g. {sample})")
     if n_unparseable:
-        parts.append(f"{n_unparseable:,} value(s) could not be parsed as numbers")
+        parts.append(
+            f"{n_unparseable:,} value(s) could not be parsed as numbers")
     return False, f"'{column}': " + "; ".join(parts)
 
 
@@ -906,7 +980,8 @@ def check_smiles_valid(file_path, df=None, output_dir=None, **_):
     if output_dir:
         try:
             makedirs(output_dir, exist_ok=True)
-            offending_indices = sorted(set(empty_rows) | {i for i, _ in malformed_rows})
+            offending_indices = sorted(
+                set(empty_rows) | {i for i, _ in malformed_rows})
             bad_part_for = {i: p for i, p in malformed_rows}
             report_df = df.loc[offending_indices].copy()
             report_df.insert(
@@ -968,7 +1043,8 @@ def check_smiles_in_library(file_path, df=None, masterlist_dir=None, output_dir=
             offending_indices = sorted({i for i, _ in missing_rows})
             missing_part_for = {i: p for i, p in missing_rows}
             report_df = df.loc[offending_indices].copy()
-            report_df.insert(0, "MissingPart", [missing_part_for[i] for i in offending_indices])
+            report_df.insert(0, "MissingPart", [
+                             missing_part_for[i] for i in offending_indices])
             report_path = pjoin(output_dir, "smiles_not_in_library_report.csv")
             report_df.to_csv(report_path, index=False)
             report_msg = f"; report saved to {os.path.basename(report_path)}"
@@ -1082,8 +1158,10 @@ def check_compound_formula_in_library(file_path, df=None, masterlist_dir=None,
             offending = sorted({i for i, _ in missing_rows})
             missing_part_for = {i: p for i, p in missing_rows}
             report_df = df.loc[offending].copy()
-            report_df.insert(0, "MissingFormula", [missing_part_for[i] for i in offending])
-            report_path = pjoin(output_dir, "formula_not_in_library_report.csv")
+            report_df.insert(0, "MissingFormula", [
+                             missing_part_for[i] for i in offending])
+            report_path = pjoin(
+                output_dir, "formula_not_in_library_report.csv")
             report_df.to_csv(report_path, index=False)
             report_msg = f"; report saved to {os.path.basename(report_path)}"
         except Exception as e:
@@ -1266,7 +1344,8 @@ def check_protein_number_consecutive_from_1(file_path, df=None, **_):
     if distinct == expected and non_int == 0 and n_unparseable == 0:
         return True, f"all {n} distinct PROTEIN_NUMBER values form {{1, 2, ..., {n}}}"
 
-    parts = [f"distinct values seen: {distinct}", f"expected {{1, 2, ..., {n}}} = {expected}"]
+    parts = [f"distinct values seen: {distinct}",
+             f"expected {{1, 2, ..., {n}}} = {expected}"]
     if non_int:
         parts.append(f"{non_int:,} non-integer value(s)")
     if n_unparseable:
@@ -1447,7 +1526,8 @@ def check_chiral_selectivity_in_allowed(file_path, df=None, output_dir=None, **_
             makedirs(output_dir, exist_ok=True)
             report_df = df.loc[bad.index].copy()
             report_df.insert(0, "RowIndex", bad.index)
-            report_path = pjoin(output_dir, "chiral_selectivity_not_allowed_report.csv")
+            report_path = pjoin(
+                output_dir, "chiral_selectivity_not_allowed_report.csv")
             report_df.to_csv(report_path, index=False)
             report_msg = f"; offending rows saved to {os.path.basename(report_path)}"
         except Exception as e:
@@ -1707,7 +1787,8 @@ def check_experiment_date_valid_and_not_future(file_path, df=None, **_):
             invalid.append((s, f"not valid YYYYMMDD: {e}"))
             continue
         if d > today:
-            invalid.append((s, f"is in the future (today is {today.isoformat()})"))
+            invalid.append(
+                (s, f"is in the future (today is {today.isoformat()})"))
     if not invalid:
         return True, "all EXPERIMENT_DATE values are valid YYYYMMDD and not in the future"
     preview = "; ".join(f"'{v}' ({r})" for v, r in invalid[:5])
@@ -1860,7 +1941,8 @@ def check_protein_id_consistent_per_target(file_path, df=None, **_):
         )
     preview_lines = []
     for tid in inconsistent.index[:5]:
-        ids = df.loc[df["TARGET_ID"] == tid, "PROTEIN_ID"].dropna().unique().tolist()
+        ids = df.loc[df["TARGET_ID"] == tid,
+                     "PROTEIN_ID"].dropna().unique().tolist()
         preview_lines.append(f"'{tid}' -> {ids}")
     suffix = (
         f" (and {len(inconsistent) - 5} more)"
@@ -1933,152 +2015,255 @@ SECTIONS = [
         ("File opens without errors",                check_file_opens),
         ("File is a CSV (extension)",                check_is_csv),
         ("File is not empty",                        check_file_not_empty),
-        (f"File size is under {MAX_FILE_SIZE_GB} GB", check_file_size_under_limit),
+        (f"File size is under {MAX_FILE_SIZE_GB} GB",
+         check_file_size_under_limit),
         ("File encoding is UTF-8",                   check_encoding_is_utf8),
         ("File is a CSV (parseable content)",        check_csv_parseable),
         ("Columns match ASMS Meta Data.csv reference", check_columns_match_metadata),
     ]),
     ("Filename Format Checks", [
-        ("Filename has no special characters or spaces", check_filename_no_special_chars),
-        ("Filename starts with 'asms_'",                 check_filename_starts_with_asms),
-        ("Filename matches overall format",              check_filename_overall_format),
+        ("Filename has no special characters or spaces",
+         check_filename_no_special_chars),
+        ("Filename starts with 'asms_'",
+         check_filename_starts_with_asms),
+        ("Filename matches overall format",
+         check_filename_overall_format),
         ("Provider acronym is registered",               check_provider_acronym),
         ("Batch number is in valid range",               check_batch_number_range),
         ("Library name is registered",                   check_library_name),
-        ("Date is valid YYYYMMDD and not in the future", check_date_valid_and_not_future),
+        ("Date is valid YYYYMMDD and not in the future",
+         check_date_valid_and_not_future),
     ]),
     ("Row Content Checks", [
         ("No fully duplicate rows", check_no_duplicate_rows),
     ]),
     ("Column Content Checks", [
         # COMPOUND_ID
-        ("COMPOUND_ID is string (VARCHAR)",                  check_compound_id_is_string),
-        ("COMPOUND_ID has no leading/trailing whitespace",   check_compound_id_no_whitespace),
-        ("COMPOUND_ID has no null values",                   check_compound_id_no_nulls),
-        ("COMPOUND_ID is unique within each TARGET_ID",      check_compound_id_unique_per_target),
+        ("COMPOUND_ID is string (VARCHAR)",
+         check_compound_id_is_string),
+        ("COMPOUND_ID has no leading/trailing whitespace",
+         check_compound_id_no_whitespace),
+        ("COMPOUND_ID has no null values",
+         check_compound_id_no_nulls),
+        ("COMPOUND_ID is unique within each TARGET_ID",
+         check_compound_id_unique_per_target),
         # SMILES
-        ("SMILES is string (VARCHAR)",                       check_smiles_is_string),
-        ("SMILES has no leading/trailing whitespace",        check_smiles_no_whitespace),
+        ("SMILES is string (VARCHAR)",
+         check_smiles_is_string),
+        ("SMILES has no leading/trailing whitespace",
+         check_smiles_no_whitespace),
         ("SMILES has no null values",                        check_smiles_no_nulls),
         ("SMILES is valid (non-empty, RDKit-parseable)",     check_smiles_valid),
         ("SMILES is in the associated library",              check_smiles_in_library),
-        ("SMILES is unique within each TARGET_ID",           check_smiles_unique_per_target),
+        ("SMILES is unique within each TARGET_ID",
+         check_smiles_unique_per_target),
         # ASMS_BATCH_NAME
-        ("ASMS_BATCH_NAME is string (VARCHAR)",                check_asms_batch_name_is_string),
-        ("ASMS_BATCH_NAME has no leading/trailing whitespace", check_asms_batch_name_no_whitespace),
-        ("ASMS_BATCH_NAME has no null values",                 check_asms_batch_name_no_nulls),
-        ("ASMS_BATCH_NAME is consistent across all rows",      check_asms_batch_name_consistent),
-        ("ASMS_BATCH_NAME follows <provider>_<batch_number>",  check_asms_batch_name_format),
+        ("ASMS_BATCH_NAME is string (VARCHAR)",
+         check_asms_batch_name_is_string),
+        ("ASMS_BATCH_NAME has no leading/trailing whitespace",
+         check_asms_batch_name_no_whitespace),
+        ("ASMS_BATCH_NAME has no null values",
+         check_asms_batch_name_no_nulls),
+        ("ASMS_BATCH_NAME is consistent across all rows",
+         check_asms_batch_name_consistent),
+        ("ASMS_BATCH_NAME follows <provider>_<batch_number>",
+         check_asms_batch_name_format),
         # COMPOUND_FORMULA
-        ("COMPOUND_FORMULA is string (VARCHAR)",                 check_compound_formula_is_string),
-        ("COMPOUND_FORMULA has no leading/trailing whitespace",  check_compound_formula_no_whitespace),
-        ("COMPOUND_FORMULA has no null values",                  check_compound_formula_no_nulls),
-        ("COMPOUND_FORMULA is in the associated library",        check_compound_formula_in_library),
+        ("COMPOUND_FORMULA is string (VARCHAR)",
+         check_compound_formula_is_string),
+        ("COMPOUND_FORMULA has no leading/trailing whitespace",
+         check_compound_formula_no_whitespace),
+        ("COMPOUND_FORMULA has no null values",
+         check_compound_formula_no_nulls),
+        ("COMPOUND_FORMULA is in the associated library",
+         check_compound_formula_in_library),
         # POOL_NAME
-        ("POOL_NAME is string (VARCHAR)",                        check_pool_name_is_string),
-        ("POOL_NAME has no leading/trailing whitespace",         check_pool_name_no_whitespace),
-        ("POOL_NAME has no null values",                         check_pool_name_no_nulls),
+        ("POOL_NAME is string (VARCHAR)",
+         check_pool_name_is_string),
+        ("POOL_NAME has no leading/trailing whitespace",
+         check_pool_name_no_whitespace),
+        ("POOL_NAME has no null values",
+         check_pool_name_no_nulls),
         # POOL_ID
-        ("POOL_ID is string (VARCHAR)",                          check_pool_id_is_string),
-        ("POOL_ID has no leading/trailing whitespace",           check_pool_id_no_whitespace),
-        ("POOL_ID has no null values",                           check_pool_id_no_nulls),
+        ("POOL_ID is string (VARCHAR)",
+         check_pool_id_is_string),
+        ("POOL_ID has no leading/trailing whitespace",
+         check_pool_id_no_whitespace),
+        ("POOL_ID has no null values",
+         check_pool_id_no_nulls),
         # POOL_SIZE
-        ("POOL_SIZE is integer (INT)",                                                  check_pool_size_is_int),
-        (f"POOL_SIZE is in valid range [{POOL_SIZE_MIN}, {POOL_SIZE_MAX}]",             check_pool_size_in_range),
-        ("POOL_SIZE has no null values",                                                check_pool_size_no_nulls),
+        ("POOL_SIZE is integer (INT)",
+         check_pool_size_is_int),
+        (f"POOL_SIZE is in valid range [{POOL_SIZE_MIN}, {POOL_SIZE_MAX}]",
+         check_pool_size_in_range),
+        ("POOL_SIZE has no null values",
+         check_pool_size_no_nulls),
         # TARGET_ID
-        ("TARGET_ID is string (VARCHAR)",                                check_target_id_is_string),
-        ("TARGET_ID has no leading/trailing whitespace",                 check_target_id_no_whitespace),
-        ("TARGET_ID has no null values",                                 check_target_id_no_nulls),
-        ("TARGET_ID matches <name>_<UniprotID>_<start>_<end>",           check_target_id_format),
-        ("TARGET_ID start < end (and both numeric)",                     check_target_id_start_lt_end),
-        ("All TARGET_IDs have the same number of compounds",             check_target_id_same_compound_count),
+        ("TARGET_ID is string (VARCHAR)",
+         check_target_id_is_string),
+        ("TARGET_ID has no leading/trailing whitespace",
+         check_target_id_no_whitespace),
+        ("TARGET_ID has no null values",
+         check_target_id_no_nulls),
+        ("TARGET_ID matches <name>_<UniprotID>_<start>_<end>",
+         check_target_id_format),
+        ("TARGET_ID start < end (and both numeric)",
+         check_target_id_start_lt_end),
+        ("All TARGET_IDs have the same number of compounds",
+         check_target_id_same_compound_count),
         # PROTEIN_NUMBER
-        ("PROTEIN_NUMBER is integer (INT)",                              check_protein_number_is_int),
-        ("PROTEIN_NUMBER has no null values",                            check_protein_number_no_nulls),
-        ("PROTEIN_NUMBER values form {1, 2, ..., N}",                    check_protein_number_consecutive_from_1),
+        ("PROTEIN_NUMBER is integer (INT)",
+         check_protein_number_is_int),
+        ("PROTEIN_NUMBER has no null values",
+         check_protein_number_no_nulls),
+        ("PROTEIN_NUMBER values form {1, 2, ..., N}",
+         check_protein_number_consecutive_from_1),
         # PROTEIN_ID
-        ("PROTEIN_ID is string (VARCHAR)",                               check_protein_id_is_string),
-        ("PROTEIN_ID has no leading/trailing whitespace",                check_protein_id_no_whitespace),
-        ("PROTEIN_ID has no null values",                                check_protein_id_no_nulls),
-        ("PROTEIN_ID is consistent within each TARGET_ID",               check_protein_id_consistent_per_target),
+        ("PROTEIN_ID is string (VARCHAR)",
+         check_protein_id_is_string),
+        ("PROTEIN_ID has no leading/trailing whitespace",
+         check_protein_id_no_whitespace),
+        ("PROTEIN_ID has no null values",
+         check_protein_id_no_nulls),
+        ("PROTEIN_ID is consistent within each TARGET_ID",
+         check_protein_id_consistent_per_target),
         # PROTEIN_NAME
-        ("PROTEIN_NAME is string (VARCHAR)",                             check_protein_name_is_string),
-        ("PROTEIN_NAME has no leading/trailing whitespace",              check_protein_name_no_whitespace),
-        ("PROTEIN_NAME has no null values",                              check_protein_name_no_nulls),
+        ("PROTEIN_NAME is string (VARCHAR)",
+         check_protein_name_is_string),
+        ("PROTEIN_NAME has no leading/trailing whitespace",
+         check_protein_name_no_whitespace),
+        ("PROTEIN_NAME has no null values",
+         check_protein_name_no_nulls),
         # INCUBATION_VOLUME
-        ("INCUBATION_VOLUME is numeric (FLOAT)",                         check_incubation_volume_is_float),
-        ("INCUBATION_VOLUME values are positive (> 0)",                  check_incubation_volume_positive),
-        ("INCUBATION_VOLUME has no null values",                         check_incubation_volume_no_nulls),
+        ("INCUBATION_VOLUME is numeric (FLOAT)",
+         check_incubation_volume_is_float),
+        ("INCUBATION_VOLUME values are positive (> 0)",
+         check_incubation_volume_positive),
+        ("INCUBATION_VOLUME has no null values",
+         check_incubation_volume_no_nulls),
         # PROTEIN_CONC
-        ("PROTEIN_CONC is numeric (FLOAT)",                              check_protein_conc_is_float),
-        (f"PROTEIN_CONC equals expected value ({PROTEIN_CONC_EXPECTED})", check_protein_conc_equals_expected),
-        ("PROTEIN_CONC has no null values",                              check_protein_conc_no_nulls),
+        ("PROTEIN_CONC is numeric (FLOAT)",
+         check_protein_conc_is_float),
+        (f"PROTEIN_CONC equals expected value ({PROTEIN_CONC_EXPECTED})",
+         check_protein_conc_equals_expected),
+        ("PROTEIN_CONC has no null values",
+         check_protein_conc_no_nulls),
         # COMPOUND_CONC
-        ("COMPOUND_CONC is numeric (FLOAT)",                             check_compound_conc_is_float),
-        ("COMPOUND_CONC values are positive (> 0)",                      check_compound_conc_positive),
-        ("COMPOUND_CONC has no null values",                             check_compound_conc_no_nulls),
+        ("COMPOUND_CONC is numeric (FLOAT)",
+         check_compound_conc_is_float),
+        ("COMPOUND_CONC values are positive (> 0)",
+         check_compound_conc_positive),
+        ("COMPOUND_CONC has no null values",
+         check_compound_conc_no_nulls),
         # MS_REPRODUCIBILITY
-        ("MS_REPRODUCIBILITY is boolean (BOOL)",                         check_ms_reproducability_is_bool),
-        ("MS_REPRODUCIBILITY only contains True/False",                  check_ms_reproducability_only_true_false),
-        ("MS_REPRODUCIBILITY has no null values",                        check_ms_reproducability_no_nulls),
+        ("MS_REPRODUCIBILITY is boolean (BOOL)",
+         check_ms_reproducability_is_bool),
+        ("MS_REPRODUCIBILITY only contains True/False",
+         check_ms_reproducability_only_true_false),
+        ("MS_REPRODUCIBILITY has no null values",
+         check_ms_reproducability_no_nulls),
         # POS_INT_REP1
-        ("POS_INT_REP1 is numeric (FLOAT)",                              check_pos_int_rep1_is_float),
-        (f"POS_INT_REP1 values are >= {POS_INT_REP_MIN}",                check_pos_int_rep1_at_least),
-        ("POS_INT_REP1 has no null values",                              check_pos_int_rep1_no_nulls),
+        ("POS_INT_REP1 is numeric (FLOAT)",
+         check_pos_int_rep1_is_float),
+        (f"POS_INT_REP1 values are >= {POS_INT_REP_MIN}",
+         check_pos_int_rep1_at_least),
+        ("POS_INT_REP1 has no null values",
+         check_pos_int_rep1_no_nulls),
         # POS_INT_REP2
-        ("POS_INT_REP2 is numeric (FLOAT)",                              check_pos_int_rep2_is_float),
-        (f"POS_INT_REP2 values are >= {POS_INT_REP_MIN}",                check_pos_int_rep2_at_least),
-        ("POS_INT_REP2 has no null values",                              check_pos_int_rep2_no_nulls),
+        ("POS_INT_REP2 is numeric (FLOAT)",
+         check_pos_int_rep2_is_float),
+        (f"POS_INT_REP2 values are >= {POS_INT_REP_MIN}",
+         check_pos_int_rep2_at_least),
+        ("POS_INT_REP2 has no null values",
+         check_pos_int_rep2_no_nulls),
         # POS_INT_REP3
-        ("POS_INT_REP3 is numeric (FLOAT)",                              check_pos_int_rep3_is_float),
-        (f"POS_INT_REP3 values are >= {POS_INT_REP_MIN}",                check_pos_int_rep3_at_least),
-        ("POS_INT_REP3 has no null values",                              check_pos_int_rep3_no_nulls),
+        ("POS_INT_REP3 is numeric (FLOAT)",
+         check_pos_int_rep3_is_float),
+        (f"POS_INT_REP3 values are >= {POS_INT_REP_MIN}",
+         check_pos_int_rep3_at_least),
+        ("POS_INT_REP3 has no null values",
+         check_pos_int_rep3_no_nulls),
         # BINARY_LABEL
-        ("BINARY_LABEL is integer (INT)",                                check_binary_label_is_int),
-        ("BINARY_LABEL only contains {0, 1}",                            check_binary_label_only_zero_one),
-        ("BINARY_LABEL has no null values",                              check_binary_label_no_nulls),
+        ("BINARY_LABEL is integer (INT)",
+         check_binary_label_is_int),
+        ("BINARY_LABEL only contains {0, 1}",
+         check_binary_label_only_zero_one),
+        ("BINARY_LABEL has no null values",
+         check_binary_label_no_nulls),
         # LIBRARY_NAME
-        ("LIBRARY_NAME is string (VARCHAR)",                             check_library_name_is_string),
-        ("LIBRARY_NAME has no leading/trailing whitespace",              check_library_name_no_whitespace),
-        ("LIBRARY_NAME has no null values",                              check_library_name_no_nulls),
-        ("LIBRARY_NAME is alphanumeric (no underscores/spaces)",         check_library_name_format),
-        ("LIBRARY_NAME is registered",                                   check_library_name_registered),
-        ("LIBRARY_NAME is consistent across all rows",                   check_library_name_consistent),
-        ("Library name matches filename, column, and MasterLists/ file", check_library_name_matches_filename_and_file),
+        ("LIBRARY_NAME is string (VARCHAR)",
+         check_library_name_is_string),
+        ("LIBRARY_NAME has no leading/trailing whitespace",
+         check_library_name_no_whitespace),
+        ("LIBRARY_NAME has no null values",
+         check_library_name_no_nulls),
+        ("LIBRARY_NAME is alphanumeric (no underscores/spaces)",
+         check_library_name_format),
+        ("LIBRARY_NAME is registered",
+         check_library_name_registered),
+        ("LIBRARY_NAME is consistent across all rows",
+         check_library_name_consistent),
+        ("Library name matches filename, column, and MasterLists/ file",
+         check_library_name_matches_filename_and_file),
         # DATA_GENERATOR_NAME
-        ("DATA_GENERATOR_NAME is string (VARCHAR)",                      check_data_generator_name_is_string),
-        ("DATA_GENERATOR_NAME has no leading/trailing whitespace",       check_data_generator_name_no_whitespace),
-        ("DATA_GENERATOR_NAME has no null values",                       check_data_generator_name_no_nulls),
-        ("DATA_GENERATOR_NAME is registered (in Providers.csv)",         check_data_generator_name_registered),
-        ("DATA_GENERATOR_NAME is consistent across all rows",            check_data_generator_name_consistent),
+        ("DATA_GENERATOR_NAME is string (VARCHAR)",
+         check_data_generator_name_is_string),
+        ("DATA_GENERATOR_NAME has no leading/trailing whitespace",
+         check_data_generator_name_no_whitespace),
+        ("DATA_GENERATOR_NAME has no null values",
+         check_data_generator_name_no_nulls),
+        ("DATA_GENERATOR_NAME is registered (in Providers.csv)",
+         check_data_generator_name_registered),
+        ("DATA_GENERATOR_NAME is consistent across all rows",
+         check_data_generator_name_consistent),
         # EXPERIMENT_DATE
-        ("EXPERIMENT_DATE is string (VARCHAR)",                          check_experiment_date_is_string),
-        ("EXPERIMENT_DATE has no leading/trailing whitespace",           check_experiment_date_no_whitespace),
-        ("EXPERIMENT_DATE has no null values",                           check_experiment_date_no_nulls),
-        ("EXPERIMENT_DATE is valid YYYYMMDD and not in the future",      check_experiment_date_valid_and_not_future),
+        ("EXPERIMENT_DATE is string (VARCHAR)",
+         check_experiment_date_is_string),
+        ("EXPERIMENT_DATE has no leading/trailing whitespace",
+         check_experiment_date_no_whitespace),
+        ("EXPERIMENT_DATE has no null values",
+         check_experiment_date_no_nulls),
+        ("EXPERIMENT_DATE is valid YYYYMMDD and not in the future",
+         check_experiment_date_valid_and_not_future),
         # CHIRAL_SELECTIVITY
-        ("CHIRAL_SELECTIVITY is string (VARCHAR)",                       check_chiral_selectivity_is_string),
-        ("CHIRAL_SELECTIVITY has no leading/trailing whitespace",        check_chiral_selectivity_no_whitespace),
-        ("CHIRAL_SELECTIVITY has no null values",                        check_chiral_selectivity_no_nulls),
-        ("CHIRAL_SELECTIVITY is one of the allowed values",              check_chiral_selectivity_in_allowed),
+        ("CHIRAL_SELECTIVITY is string (VARCHAR)",
+         check_chiral_selectivity_is_string),
+        ("CHIRAL_SELECTIVITY has no leading/trailing whitespace",
+         check_chiral_selectivity_no_whitespace),
+        ("CHIRAL_SELECTIVITY has no null values",
+         check_chiral_selectivity_no_nulls),
+        ("CHIRAL_SELECTIVITY is one of the allowed values",
+         check_chiral_selectivity_in_allowed),
         # MZ
-        ("MZ is numeric (FLOAT)",                                        check_mz_is_float),
-        (f"MZ is in valid range [{MZ_MIN}, {MZ_MAX}]",                   check_mz_in_range),
-        ("MZ has no null values",                                        check_mz_no_nulls),
+        ("MZ is numeric (FLOAT)",
+         check_mz_is_float),
+        (f"MZ is in valid range [{MZ_MIN}, {MZ_MAX}]",
+         check_mz_in_range),
+        ("MZ has no null values",
+         check_mz_no_nulls),
         # RT
-        ("RT is numeric (FLOAT)",                                        check_rt_is_float),
-        (f"RT is in valid range ({RT_MIN}, {RT_MAX}) exclusive",         check_rt_in_range),
-        ("RT has no null values",                                        check_rt_no_nulls),
+        ("RT is numeric (FLOAT)",
+         check_rt_is_float),
+        (f"RT is in valid range ({RT_MIN}, {RT_MAX}) exclusive",
+         check_rt_in_range),
+        ("RT has no null values",
+         check_rt_no_nulls),
         # PROTEIN_SEQ
-        ("PROTEIN_SEQ is string (VARCHAR)",                              check_protein_seq_is_string),
-        ("PROTEIN_SEQ has no leading/trailing whitespace",               check_protein_seq_no_whitespace),
-        ("PROTEIN_SEQ has no null values",                               check_protein_seq_no_nulls),
-        (f"PROTEIN_SEQ length > {PROTEIN_SEQ_MIN_LENGTH}",                check_protein_seq_min_length),
+        ("PROTEIN_SEQ is string (VARCHAR)",
+         check_protein_seq_is_string),
+        ("PROTEIN_SEQ has no leading/trailing whitespace",
+         check_protein_seq_no_whitespace),
+        ("PROTEIN_SEQ has no null values",
+         check_protein_seq_no_nulls),
+        (f"PROTEIN_SEQ length > {PROTEIN_SEQ_MIN_LENGTH}",
+         check_protein_seq_min_length),
         # PROTEIN_TAG
-        ("PROTEIN_TAG is string (VARCHAR)",                              check_protein_tag_is_string),
-        ("PROTEIN_TAG has no leading/trailing whitespace",               check_protein_tag_no_whitespace),
-        ("PROTEIN_TAG has no null values",                               check_protein_tag_no_nulls),
+        ("PROTEIN_TAG is string (VARCHAR)",
+         check_protein_tag_is_string),
+        ("PROTEIN_TAG has no leading/trailing whitespace",
+         check_protein_tag_no_whitespace),
+        ("PROTEIN_TAG has no null values",
+         check_protein_tag_no_nulls),
     ]),
 ]
 
@@ -2113,7 +2298,8 @@ def _generate_statistics_summary(df):
     # ---- Per-protein breakdown ----
     if "TARGET_ID" in df.columns:
         try:
-            lines.append(f"Distinct proteins (TARGET_ID): {df['TARGET_ID'].nunique()}")
+            lines.append(
+                f"Distinct proteins (TARGET_ID): {df['TARGET_ID'].nunique()}")
             if "COMPOUND_ID" in df.columns:
                 try:
                     lines.append(
@@ -2125,7 +2311,8 @@ def _generate_statistics_summary(df):
 
             has_label = "BINARY_LABEL" in df.columns
             if has_label:
-                lines.append("Per-protein breakdown (rows + BINARY_LABEL counts):")
+                lines.append(
+                    "Per-protein breakdown (rows + BINARY_LABEL counts):")
                 lines.append(
                     f"  {'TARGET_ID':<45} {'rows':>10} {'label=0':>10} {'label=1':>10}"
                 )
@@ -2146,7 +2333,8 @@ def _generate_statistics_summary(df):
                     else:
                         lines.append(f"  {target_disp:<45} {len(group):>10,}")
                 except Exception as e:
-                    lines.append(f"  {str(target)[:45]:<45} (could not compute: {e})")
+                    lines.append(
+                        f"  {str(target)[:45]:<45} (could not compute: {e})")
             lines.append("")
         except Exception as e:
             lines.append(f"(Per-protein breakdown failed: {e})")
@@ -2193,9 +2381,11 @@ def _collect_statistics_rows(df):
         ("Total columns", f"{len(df.columns):,}"),
     ]
     if "TARGET_ID" in df.columns:
-        rows.append(("Distinct proteins (TARGET_ID)", f"{df['TARGET_ID'].nunique():,}"))
+        rows.append(("Distinct proteins (TARGET_ID)",
+                    f"{df['TARGET_ID'].nunique():,}"))
         if "COMPOUND_ID" in df.columns:
-            rows.append(("Distinct compounds (COMPOUND_ID)", f"{df['COMPOUND_ID'].nunique():,}"))
+            rows.append(("Distinct compounds (COMPOUND_ID)",
+                        f"{df['COMPOUND_ID'].nunique():,}"))
     return rows
 
 
@@ -2351,9 +2541,12 @@ def _write_excel_report(rows, excel_path, file_name, generated_at, overall_statu
 
     # Metadata block
     bold = Font(bold=True)
-    ws["A1"] = "File:";      ws["B1"] = file_name
-    ws["A2"] = "Generated:"; ws["B2"] = generated_at
-    ws["A3"] = "Overall:";   ws["B3"] = overall_status
+    ws["A1"] = "File:"
+    ws["B1"] = file_name
+    ws["A2"] = "Generated:"
+    ws["B2"] = generated_at
+    ws["A3"] = "Overall:"
+    ws["B3"] = overall_status
     for addr in ("A1", "A2", "A3"):
         ws[addr].font = bold
 
@@ -2373,7 +2566,8 @@ def _write_excel_report(rows, excel_path, file_name, generated_at, overall_statu
     wrap = Alignment(wrap_text=True, vertical="top")
     for offset, row in enumerate(rows, start=1):
         excel_row = header_row + offset
-        values = [row["Section"], row["Check #"], row["Criteria"], row["Status"], row["Detail"]]
+        values = [row["Section"], row["Check #"],
+                  row["Criteria"], row["Status"], row["Detail"]]
         for col_idx, val in enumerate(values, start=1):
             cell = ws.cell(row=excel_row, column=col_idx, value=val)
             cell.fill = status_fills.get(row["Status"], status_fills["PASS"])
@@ -2401,29 +2595,35 @@ def _write_excel_report(rows, excel_path, file_name, generated_at, overall_statu
 
         # Per-protein breakdown
         if "TARGET_ID" in df.columns:
-            stats_ws.cell(row=row_idx, column=1, value="Per-protein breakdown").font = bold
+            stats_ws.cell(row=row_idx, column=1,
+                          value="Per-protein breakdown").font = bold
             row_idx += 1
             has_label = "BINARY_LABEL" in df.columns
             stats_ws.cell(row=row_idx, column=1, value="TARGET_ID").font = bold
             stats_ws.cell(row=row_idx, column=2, value="rows").font = bold
             if has_label:
-                stats_ws.cell(row=row_idx, column=3, value="label=0").font = bold
-                stats_ws.cell(row=row_idx, column=4, value="label=1").font = bold
+                stats_ws.cell(row=row_idx, column=3,
+                              value="label=0").font = bold
+                stats_ws.cell(row=row_idx, column=4,
+                              value="label=1").font = bold
             row_idx += 1
             for target, group in df.groupby("TARGET_ID"):
                 stats_ws.cell(row=row_idx, column=1, value=str(target))
                 stats_ws.cell(row=row_idx, column=2, value=int(len(group)))
                 if has_label:
                     counts = group["BINARY_LABEL"].value_counts()
-                    stats_ws.cell(row=row_idx, column=3, value=int(counts.get(0, 0)))
-                    stats_ws.cell(row=row_idx, column=4, value=int(counts.get(1, 0)))
+                    stats_ws.cell(row=row_idx, column=3,
+                                  value=int(counts.get(0, 0)))
+                    stats_ws.cell(row=row_idx, column=4,
+                                  value=int(counts.get(1, 0)))
                 row_idx += 1
             row_idx += 1  # blank spacer
 
         # Numeric column statistics
         numeric_cols = df.select_dtypes(include="number").columns.tolist()
         if numeric_cols:
-            stats_ws.cell(row=row_idx, column=1, value="Numeric column statistics").font = bold
+            stats_ws.cell(row=row_idx, column=1,
+                          value="Numeric column statistics").font = bold
             row_idx += 1
             for col_idx, h in enumerate(["Column", "non-null", "min", "max", "mean"], start=1):
                 stats_ws.cell(row=row_idx, column=col_idx, value=h).font = bold
@@ -2433,9 +2633,12 @@ def _write_excel_report(rows, excel_path, file_name, generated_at, overall_statu
                 stats_ws.cell(row=row_idx, column=1, value=col)
                 stats_ws.cell(row=row_idx, column=2, value=int(len(non_null)))
                 if not non_null.empty:
-                    stats_ws.cell(row=row_idx, column=3, value=float(non_null.min()))
-                    stats_ws.cell(row=row_idx, column=4, value=float(non_null.max()))
-                    stats_ws.cell(row=row_idx, column=5, value=float(non_null.mean()))
+                    stats_ws.cell(row=row_idx, column=3,
+                                  value=float(non_null.min()))
+                    stats_ws.cell(row=row_idx, column=4,
+                                  value=float(non_null.max()))
+                    stats_ws.cell(row=row_idx, column=5,
+                                  value=float(non_null.mean()))
                 row_idx += 1
 
         # Reasonable widths for the Statistics sheet

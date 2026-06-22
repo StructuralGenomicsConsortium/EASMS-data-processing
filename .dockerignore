@@ -1,0 +1,34 @@
+# Separate project — not part of this pipeline image.
+easms-curation/
+
+# VCS / tooling
+.git
+.gitignore
+.claude
+.pytest_cache
+**/.pytest_cache
+
+# Virtualenvs and Python caches
+.venv
+**/.venv
+**/__pycache__
+*.pyc
+
+# Providers.csv is intentionally baked in so the pipeline finds it at
+# /app/Providers.csv when --providers-csv is not passed (same behavior in the
+# container and locally). For production you can still override it at runtime
+# with --providers-csv gs://... (the Makefile deploy does). If you'd rather NOT
+# ship it inside the image, re-add "Providers.csv" below and pass it via gs://.
+
+# Generated pipeline output
+ProcessedData_*/
+
+# Docs / large assets not needed at runtime
+SampleLog.png
+*.md
+
+# Host-only infra (run from the host, not from inside the image)
+*.sh
+Makefile
+.env
+.env.example
