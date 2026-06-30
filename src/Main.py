@@ -20,8 +20,9 @@ from isomer_handling import handle_isomers
 from produce_ml_labels import generate_ml_labels
 from add_negatives import add_negative_samples_from_masterlist
 from fingerprint_extraction import extract_fingerprints
-from column_selection import select_final_columns
+from column_selection import select_final_columns, load_column_tags
 from quality_check import run_quality_checks
+from batch_protein_info import write_batch_protein_info
 from post_quality_check import run_post_quality_checks
 
 STEP_FOLDERS = {
@@ -32,23 +33,25 @@ STEP_FOLDERS = {
     5: "Step5_WithNegatives",
     6: "Step6_MLReady",
     7: "Step7_WithFingerprints",
-    8: "Step8_FullColumns",
-    9: "Step9_KeyColumns",
+    8: "Step8_FinalData",
 }
+# Step 8 also writes a per-target metadata CSV (the 'metadata'-tagged columns)
+# into this sibling folder.
+METADATA_FOLDER = "Step8_Metadata"
 
-# Steps 1-6 save CSV; steps 7-9 save Parquet (fingerprints make CSVs unwieldy).
+# Steps 1-6 save CSV; steps 7-8 save Parquet (fingerprints make CSVs unwieldy).
 PARQUET_FROM_STEP = 7
 
 
 def _step_input_files(start_from, step_dirs, scored_files):
     """Return the list of files to feed into the per-target loop based on start_from.
 
-    Steps 8 and 9 both branch from Step 7's output, so when resuming at 8 or 9 we
-    read from Step7, not the immediately preceding step.
+    Step 8 branches from Step 7's output, so when resuming at 8 we read from
+    Step7, not the immediately preceding step.
     """
     if start_from <= 3:
         return scored_files
-    load_step = 7 if start_from in (8, 9) else (start_from - 1)
+    load_step = 7 if start_from == 8 else (start_from - 1)
     load_dir = step_dirs[load_step]
     ext = ".parquet" if load_step >= PARQUET_FROM_STEP else ".csv"
     return sorted(
@@ -56,10 +59,29 @@ def _step_input_files(start_from, step_dirs, scored_files):
     )
 
 
+def _unique_protein_id_name(df, fallback):
+    """Filename stem for the Step 7/8 outputs, taken from the UNIQUE_PROTEIN_ID
+    column (one protein/target per file). Falls back to `fallback` if the column
+    is missing or has no value. Characters that are invalid in filenames are
+    sanitized — notably the '|' used in protein-complex IDs ('|' -> '+')."""
+    if "UNIQUE_PROTEIN_ID" not in df.columns:
+        return fallback
+    vals = df["UNIQUE_PROTEIN_ID"].dropna()
+    if vals.empty:
+        return fallback
+    name = str(vals.iloc[0]).strip()
+    if not name:
+        return fallback
+    name = name.replace("|", "+")
+    for ch in '\\/:*?"<>':
+        name = name.replace(ch, "_")
+    return name
+
+
 def process_csv_files(input_files, masterlist_path, output_dir, providers_csv,
-                      DesiredColumns, DesiredColumns2,
-                      start_from=0, end_at=9, meta_csv=None, fp_format="array"):
-    """Processes the given CSV files through data curation steps 1..9.
+                      data_columns, metadata_columns,
+                      start_from=0, end_at=8, meta_csv=None, fp_format="array"):
+    """Processes the given CSV files through data curation steps 1..8.
 
     `input_files` is a list of raw CSV paths (local or gs://). For each file, a
     `ProcessedData_<name>/` folder is created under `output_dir`.
@@ -80,6 +102,10 @@ def process_csv_files(input_files, masterlist_path, output_dir, providers_csv,
         makedirs(processed_data_dir, exist_ok=True)
 
         step_dirs = {n: pjoin(processed_data_dir, name) for n, name in STEP_FOLDERS.items()}
+
+        # Per-batch protein summary (one row per TARGET_ID), written next to the
+        # step folders. Independent of the step gating below.
+        write_batch_protein_info(file_path, processed_data_dir)
 
         # Step 0: QC (only when start-from == 0)
         if start_from <= 0:
@@ -149,6 +175,11 @@ def process_csv_files(input_files, masterlist_path, output_dir, providers_csv,
             else:
                 df = pd.read_csv(input_file)
 
+            # Steps 1-6 are named by TARGET_ID (base_name); Steps 7-8 are named
+            # by UNIQUE_PROTEIN_ID. Derived from the real rows here, before Step 5
+            # adds negative samples (which have no UNIQUE_PROTEIN_ID).
+            out_name = _unique_protein_id_name(df, base_name)
+
             # Step 3: filter anomalies
             if start_from <= 3 and end_at >= 3:
                 print(f"    Step 3: filtering anomalies — {base_name}", flush=True)
@@ -187,44 +218,41 @@ def process_csv_files(input_files, masterlist_path, output_dir, providers_csv,
                     "MEAN_NONTARGET_VALUES": "NONTARGET_INTENSITY_VALUE",
                 })
                 df["LABEL"] = df["BINARY_LABEL"]
-                df.to_parquet(pjoin(step_dirs[7], f"{base_name}.parquet"), index=False)
+                df.to_parquet(pjoin(step_dirs[7], f"{out_name}.parquet"), index=False)
 
-            # Steps 8 and 9 both read the Step 7 dataframe (parallel branches).
-            # select_final_columns returns a new DataFrame, so `df` stays intact
-            # between the two calls.
-
-            # Step 8: select full column set
+            # Step 8: split the Step 7 dataframe into the final data file
+            # ('data'-tagged columns, Parquet) and a metadata sidecar
+            # ('metadata'-tagged columns, CSV). select_final_columns returns a
+            # new DataFrame, so `df` stays intact between the two calls.
             if start_from <= 8 and end_at >= 8:
-                print(f"    Step 8: selecting full column set — {base_name}", flush=True)
+                print(f"    Step 8: writing final data + metadata — {base_name}", flush=True)
                 makedirs(step_dirs[8], exist_ok=True)
-                df_full = select_final_columns(df, DesiredColumns)
-                df_full.to_parquet(pjoin(step_dirs[8], f"{base_name}.parquet"), index=False)
+                df_data = select_final_columns(df, data_columns)
+                df_data.to_parquet(pjoin(step_dirs[8], f"{out_name}.parquet"), index=False)
 
-            # Step 9: select key (slim) column set
-            if start_from <= 9 and end_at >= 9:
-                print(f"    Step 9: selecting key column set — {base_name}", flush=True)
-                makedirs(step_dirs[9], exist_ok=True)
-                df_key = select_final_columns(df, DesiredColumns2)
-                df_key.to_parquet(pjoin(step_dirs[9], f"{base_name}.parquet"), index=False)
+                metadata_dir = pjoin(processed_data_dir, METADATA_FOLDER)
+                makedirs(metadata_dir, exist_ok=True)
+                df_meta = select_final_columns(df, metadata_columns)
+                df_meta.to_csv(pjoin(metadata_dir, f"{out_name}.csv"), index=False)
 
         # ---- Post-pipeline QC ----
-        # Runs once per input CSV, after every per-target Step 8 Parquet has
-        # been written. Validates value sets, ranges, non-negativity, and
-        # fingerprint lengths on the concatenated Step 8 output.
-        if end_at >= 8:
+        # Runs once per input CSV, against the full Step 7 per-target Parquet
+        # output (which still carries every column). Validates value sets,
+        # ranges, non-negativity, and fingerprint lengths.
+        if end_at >= 7:
             run_post_quality_checks(
-                parquet_dir=step_dirs[8],
+                parquet_dir=step_dirs[7],
                 log_dir=processed_data_dir,
                 csv_basename=csv_basename,
             )
 
 
 def main(input_files, masterlist_path, output_dir, providers_csv,
-         DesiredColumns, DesiredColumns2,
-         start_from=0, end_at=9, meta_csv=None, fp_format="array"):
+         data_columns, metadata_columns,
+         start_from=0, end_at=8, meta_csv=None, fp_format="array"):
     """Main function to execute the full data curation pipeline."""
     process_csv_files(input_files, masterlist_path, output_dir, providers_csv,
-                      DesiredColumns, DesiredColumns2,
+                      data_columns, metadata_columns,
                       start_from=start_from, end_at=end_at, meta_csv=meta_csv,
                       fp_format=fp_format)
 
@@ -264,23 +292,30 @@ if __name__ == "__main__":
     parser.add_argument(
         "--meta-csv",
         default=None,
-        help="ASMS Meta Data.csv (canonical column reference) path. Default: <repo>/ASMS Meta Data.csv.",
+        help="RawDataColumns.csv (canonical column reference) path. Default: <repo>/RawDataColumns.csv.",
+    )
+    parser.add_argument(
+        "--column-actions",
+        default=None,
+        help="ColumnActions.xlsx tag file (columns 'Column name'/'Action' with values data/metadata/-). "
+             "'data' columns -> Step8 final-data Parquet; 'metadata' columns -> Step8 metadata CSV. "
+             "Default: <repo>/ColumnActions.xlsx.",
     )
     parser.add_argument(
         "--start-from",
         type=int,
         default=0,
-        choices=range(0, 10),
+        choices=range(0, 9),
         metavar="N",
-        help="Step number to start running from (0-9). 0 = Quality Check. Earlier steps are loaded from their saved output. Default: 0.",
+        help="Step number to start running from (0-8). 0 = Quality Check. Earlier steps are loaded from their saved output. Default: 0.",
     )
     parser.add_argument(
         "--end-at",
         type=int,
-        default=9,
-        choices=range(0, 10),
+        default=8,
+        choices=range(0, 9),
         metavar="N",
-        help="Step number to stop after (0-9). 0 = run only Quality Check, then stop. Later steps are skipped. Default: 9.",
+        help="Step number to stop after (0-8). 0 = run only Quality Check, then stop. Later steps are skipped. Default: 8.",
     )
     args = parser.parse_args()
     if args.start_from > args.end_at:
@@ -310,7 +345,8 @@ if __name__ == "__main__":
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     masterlist_path = args.masterlists_dir if args.masterlists_dir else pjoin(repo_root, "MasterLists")
     providers_csv = args.providers_csv if args.providers_csv else pjoin(repo_root, "Providers.csv")
-    meta_csv = args.meta_csv if args.meta_csv else pjoin(repo_root, "ASMS Meta Data.csv")
+    meta_csv = args.meta_csv if args.meta_csv else pjoin(repo_root, "RawDataColumns.csv")
+    column_actions = args.column_actions if args.column_actions else pjoin(repo_root, "ColumnActions.xlsx")
 
     # How fingerprint values are stored in the Step 7+ output columns:
     #   "array"  (default) -> numpy float32 arrays, ready to use directly.
@@ -319,74 +355,15 @@ if __name__ == "__main__":
     #                          to arrays before use).
     TypeOfFp = "array"
 
-    DesiredColumns = ['ASMS_BATCH_NAME',
-     'COMPOUND_ID',
-     'COMPOUND_FORMULA',
-     'SMILES',
-     'POOL_NAME',
-     'POOL_ID',
-     'POOL_SIZE',
-     'PROTEIN_NUMBER',
-     'TARGET_ID',
-     'PROTEIN_ID',
-     'PROTEIN_NAME',
-     'PROTEIN_SEQ',
-     'PROTEIN_TAG',
-     'INCUBATION_VOLUME (uL)',
-     'PROTEIN_CONC (uM)',
-     'COMPOUND_CONC (uM)',
-     'MS_REPRODUCIBILITY',
-     'POS_INT_REP1',
-     'POS_INT_REP2',
-     'POS_INT_REP3',
-     'TARGET_INTENSITY_VALUE',
-     'SELECTIVE_VALUE',
-     'NTC_VALUE',
-     'ENRICHMENT',
-     'SELECTIVE_ENRICHMENT',
-     'PVALUE',
-     'BINARY_LABEL',
-     'HAD_DUPLICATE_INTENSITY',
-     'ISOMERS',
-     'MassSpec_Detected',
-     'EASMS_ENRICHMENT',
-     'NONTARGET_INTENSITY_VALUE',
-     'LABEL',
-     'AIRCHECK_LABEL',
-     'MW',
-     'ALOGP',
-     'ECFP4',
-     'ECFP6',
-     'FCFP4',
-     'FCFP6',
-     'MACCS',
-     'RDK',
-     'AVALON',
-     'TOPTOR',
-     'ATOMPAIR']
-    
-    DesiredColumns2 = [
-     'COMPOUND_ID',
-     'SMILES',
-     'TARGET_ID',
-     'TARGET_INTENSITY_VALUE',
-     'NONTARGET_INTENSITY_VALUE',
-     'EASMS_ENRICHMENT',
-     'PVALUE',
-     'LABEL',
-     'MW',
-     'ALOGP',
-     'ECFP4',
-     'ECFP6',
-     'FCFP4',
-     'FCFP6',
-     'MACCS',
-     'RDK',
-     'AVALON',
-     'TOPTOR',
-     'ATOMPAIR']
+    # Step 8 column selection is driven by the ColumnActions tag file:
+    #   'data'     -> final-data Parquet (Step8_FinalData)
+    #   'metadata' -> metadata CSV       (Step8_Metadata)
+    #   anything else (e.g. '-') is dropped.
+    data_columns, metadata_columns = load_column_tags(column_actions)
+    print(f"Loaded column tags from {column_actions}: "
+          f"{len(data_columns)} data, {len(metadata_columns)} metadata columns.")
 
     main(input_files, masterlist_path, output_dir, providers_csv,
-         DesiredColumns, DesiredColumns2,
+         data_columns, metadata_columns,
          start_from=args.start_from, end_at=args.end_at, meta_csv=meta_csv,
          fp_format=TypeOfFp)
