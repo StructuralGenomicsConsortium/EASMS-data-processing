@@ -36,3 +36,42 @@ def select_final_columns(df, DesiredColumns):
     print(f"Final DataFrame contains {len(df.columns)} columns: {available_columns}")
 
     return df
+
+
+def load_column_tags(path):
+    """Read a column/action spreadsheet and return (data_columns, metadata_columns).
+
+    The spreadsheet has a column of raw/computed column names and a column of
+    actions. Names tagged ``data`` go to the final data file, names tagged
+    ``metadata`` go to the metadata file, and any other tag (e.g. ``-``) is
+    ignored. Headers are matched case-insensitively as ``Column name`` and
+    ``Action``, falling back to the first two columns. Accepts local paths and
+    ``gs://`` URLs (via fsspec).
+
+    Args:
+        path (str): Path to the .xlsx (or .csv) tag file.
+
+    Returns:
+        tuple[list[str], list[str]]: (data_columns, metadata_columns), in the
+        order they appear in the file.
+    """
+    if str(path).lower().endswith(".csv"):
+        tags = pd.read_csv(path)
+    else:
+        tags = pd.read_excel(path)
+
+    lower = {str(c).strip().lower(): c for c in tags.columns}
+    name_col = lower.get("column name", tags.columns[0])
+    action_col = lower.get("action", tags.columns[1])
+
+    data_columns, metadata_columns = [], []
+    for name, action in zip(tags[name_col], tags[action_col]):
+        name = str(name).strip()
+        action = str(action).strip().lower()
+        if not name or name.lower() == "nan":
+            continue
+        if action == "data":
+            data_columns.append(name)
+        elif action == "metadata":
+            metadata_columns.append(name)
+    return data_columns, metadata_columns

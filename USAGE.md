@@ -48,7 +48,8 @@ The **config/reference files default to this repo** and are each overridable:
 |---|---|
 | `--masterlists-dir` | `<repo>/MasterLists` |
 | `--providers-csv` | `<repo>/Providers.csv` |
-| `--meta-csv` | `<repo>/ASMS Meta Data.csv` |
+| `--meta-csv` | `<repo>/RawDataColumns.csv` |
+| `--column-actions` | `<repo>/ColumnActions.xlsx` (drives the Step 8 data/metadata column split) |
 
 ```powershell
 # One file — output lands next to it, config read from the repo
@@ -72,7 +73,7 @@ python src/Main.py --help
 
 ## 4. Run only a subset of steps
 
-Use `--start-from N` and `--end-at N` to control which steps execute. Step numbers are 1–9 (see [Readme.md](Readme.md#pipeline-steps) for what each step does). Skipped earlier steps are loaded from their saved output on disk. (Examples use `--input-file`; `--input-dir` works the same way, and both accept `gs://` paths.)
+Use `--start-from N` and `--end-at N` to control which steps execute. Step numbers are 1–8 (see [PIPELINE.md](PIPELINE.md) for what each step does). Skipped earlier steps are loaded from their saved output on disk. (Examples use `--input-file`; `--input-dir` works the same way, and both accept `gs://` paths.)
 
 ```powershell
 # Run only the Quality Check (step 0) and stop
@@ -91,7 +92,7 @@ python src/Main.py --input-file run.csv --start-from 7
 python src/Main.py --input-file run.csv --start-from 5 --end-at 5
 ```
 
-Defaults: `--start-from 0 --end-at 9` (run everything, including QC). Quality checks (step 0) run only when `--start-from 0`.
+Defaults: `--start-from 0 --end-at 8` (run everything, including QC). Quality checks (step 0) run only when `--start-from 0`.
 
 ---
 
@@ -138,7 +139,7 @@ By default the config/reference files are still read from the **local repo**, so
 python src/Main.py --input-file gs://my-bucket/asms/run.csv `
   --masterlists-dir gs://my-bucket/config/MasterLists `
   --providers-csv   gs://my-bucket/config/Providers.csv `
-  --meta-csv        "gs://my-bucket/config/ASMS Meta Data.csv"
+  --meta-csv        "gs://my-bucket/config/RawDataColumns.csv"
 ```
 
 Mixing is fine — e.g. read from `gs://`, write locally, or vice-versa. Each path is detected independently.

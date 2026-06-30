@@ -17,7 +17,7 @@ Example of the Excel companion log:
 
 ![Sample QC log](SampleLog.png)
 
-The screenshot above shows a run where Check 7 (column-name match against `ASMS Meta Data.csv`) failed with both missing and extra columns, and Check 15 (duplicate rows) raised a WARN — the pipeline would skip this file because of Check 7, but the duplicate-row warning on its own would not have blocked it.
+The screenshot above shows a run where Check 7 (column-name match against `RawDataColumns.csv`) failed with both missing and extra columns, and Check 15 (duplicate rows) raised a WARN — the pipeline would skip this file because of Check 7, but the duplicate-row warning on its own would not have blocked it.
 
 Some checks also produce supplementary CSVs (e.g. `FullyDuplicate_rows_report.csv`, `invalid_smiles_report.csv`, `formula_not_in_library_report.csv`, …) next to the QC logs. They are listed under the relevant check below.
 
@@ -67,7 +67,7 @@ The summary is **defensive by design** — each section, each protein row, and e
 4. **File size is under 10 GB** — guards against accidentally pointing at something huge. Limit is `MAX_FILE_SIZE_GB` at the top of [src/quality_check.py](src/quality_check.py).
 5. **File encoding is UTF-8** — reads the file in chunks and verifies it decodes cleanly with no encoding errors.
 6. **File is a CSV (parseable content)** — uses `pandas.read_csv(nrows=5)` to confirm the content actually parses as CSV; reports row count, column count, and column names.
-7. **Columns match `ASMS Meta Data.csv` reference** — compares the input file's column names against the canonical list in `ASMS Meta Data.csv` (see [Readme.md → Data Inputs → ASMS Meta Data.csv](Readme.md#asms-meta-datacsv)). On mismatch the log lists `missing from file: [...]` and `extra columns not in reference: [...]`.
+7. **Columns match `RawDataColumns.csv` reference** — compares the input file's column names against the canonical list in `RawDataColumns.csv` (see [Readme.md → Data Inputs → RawDataColumns.csv](Readme.md#rawdatacolumnscsv)). On mismatch the log lists `missing from file: [...]` and `extra columns not in reference: [...]`.
 
 ## Filename Format Checks
 
@@ -77,7 +77,7 @@ Files must be named `asms_<provider>_<batch>_<library>_<YYYYMMDD>.csv` (e.g. `as
 9. **Filename starts with `asms_`**.
 10. **Filename matches overall format** — must parse as `asms_<provider>_<batchN>_<library>_<YYYYMMDD>.csv`.
 11. **Provider acronym is registered** — the `<provider>` token must appear in the `acronym` column of `Providers.csv` (see *Providers config* below).
-12. **Batch number is in valid range** — integer between `MIN_BATCH_NUMBER` (0) and `MAX_BATCH_NUMBER` (10000). Leading zeros are allowed (`01`, `0100`).
+12. **Batch number is in valid range** — integer between `MIN_BATCH_NUMBER` (1) and `MAX_BATCH_NUMBER` (10000). Leading zeros are allowed (`01`, `0100`).
 13. **Library name is registered** — the `<library>` token must match the filename stem of a library file (`.xlsx`/`.csv`) in the master-lists folder.
 14. **Date is valid `YYYYMMDD` and not in the future** — parsed with `datetime.strptime`; must be ≤ today.
 
@@ -91,7 +91,7 @@ Files must be named `asms_<provider>_<batch>_<library>_<YYYYMMDD>.csv` (e.g. `as
 
 Before running these, the orchestrator reads the file once and drops fully-duplicate rows (the same rows Check 15 flagged), so column-content checks see the cleaned data — not the raw file. This is QC-internal only; the actual pipeline's Step 3 still does its own `drop_duplicates()` on the unmodified input.
 
-> The check numbers below are indicative. The `PROTEIN_NAME` column adds three checks after `PROTEIN_ID`, so the actual numbering of later checks is shifted accordingly — the authoritative list is the `SECTIONS` table in [src/quality_check.py](src/quality_check.py).
+> The check numbers below are indicative. The `PROTEIN_NAME` (3 checks) and `UNIQUE_PROTEIN_ID` (4 checks) columns add checks after `UNIPROT_ID`, so the actual numbering of later checks is shifted accordingly — the authoritative list is the `SECTIONS` table in [src/quality_check.py](src/quality_check.py).
 
 ### `COMPOUND_ID`
 
@@ -150,13 +150,18 @@ The library file uses the column name `formula` (lowercase, though the lookup is
 
 ### `TARGET_ID`
 
-`TARGET_ID` must follow `<name>_<UniprotID>_<startAA>_<endAA>` (e.g. `WDR91_A4D1P6_392_747`). The Uniprot_ID segment is **not yet validated against a registry** — see the TODO at the bottom of the TARGET_ID block in [src/quality_check.py](src/quality_check.py); a check function and the wiring instructions are sketched there for when a list of valid Uniprot_IDs becomes available.
+`TARGET_ID` follows `<names>_<keys>_<ranges>`: the value is split on the **first two** underscores into a names block, a keys block, and a ranges block (so underscores inside the start/end ranges are preserved). Each block is a `|`-separated list of equal length — supporting single proteins and complexes:
+
+- Single protein — `WDR91_A4D1P6_392_747`
+- 3-protein complex — `EXOSC7|EXOSC6|EXOSC8_Q15024|Q5RKV6|Q96B26_1_291|1_272|1_276`
+
+Each `<ranges>` entry is `<start>_<end>` (positive integers). The keys segment is **not yet validated against a registry** — see the TODO at the bottom of the TARGET_ID block in [src/quality_check.py](src/quality_check.py).
 
 44. **TARGET_ID is string (VARCHAR)** — WARN.
 45. **TARGET_ID has no leading/trailing whitespace** — FAIL.
 46. **TARGET_ID has no null values** — FAIL.
-47. **TARGET_ID matches `<name>_<UniprotID>_<start>_<end>`** — FAIL. Regex: `^[A-Za-z0-9]+_[A-Za-z0-9]+_\d+_\d+$`. Lists up to five offending values in the log message.
-48. **TARGET_ID start < end (and both numeric)** — FAIL. Parses the two trailing digit groups as integers and verifies `start < end` for every unique TARGET_ID that matched the format.
+47. **TARGET_ID matches `<names>_<keys>_<ranges>`** — FAIL. Splits on the first two `_`; requires equal `|`-counts across names/keys/ranges (any number of proteins), non-empty name/key segments, and each range to be `<int>_<int>`. Lists up to five offending values.
+48. **TARGET_ID start < end (and both numeric)** — FAIL. For every `<start>_<end>` range (each protein in a complex) verifies `start < end`.
 49. **All TARGET_IDs have the same number of compounds** — WARN. Each batch is expected to test the same library against every target, so all TARGET_IDs should appear with identical `COMPOUND_ID` counts. When counts differ the detail reports min, max, and the distinct counts observed.
 
 ### `PROTEIN_NUMBER` (INT)
@@ -167,22 +172,37 @@ A number associated with each protein in the batch. In a batch of 8 proteins, th
 51. **PROTEIN_NUMBER has no null values** — FAIL.
 52. **PROTEIN_NUMBER values form `{1, 2, ..., N}`** — WARN. PASSes when the distinct values are exactly the integers 1..N for whatever N is observed in the file. Any deviation (fewer, more, gaps, off-by-one start, non-integer values, unparseable values) WARNs and the detail message lists the actual distinct values plus the expected `{1..N}` set so you can see what's off.
 
-### `PROTEIN_ID`
+### `UNIPROT_ID`
 
-`PROTEIN_ID` holds the Uniprot ID of the protein. Each `TARGET_ID` represents one protein region, so all rows sharing a `TARGET_ID` must also share the same `PROTEIN_ID`.
+`UNIPROT_ID` holds the Uniprot ID of the protein. Each `TARGET_ID` represents one protein region, so all rows sharing a `TARGET_ID` must also share the same `UNIPROT_ID`.
 
-53. **PROTEIN_ID is string (VARCHAR)** — WARN.
-54. **PROTEIN_ID has no leading/trailing whitespace** — FAIL.
-55. **PROTEIN_ID has no null values** — FAIL.
-56. **PROTEIN_ID is consistent within each TARGET_ID** — FAIL. Groups rows by `TARGET_ID` and counts distinct `PROTEIN_ID` values per group; if any group has more than one, the row group is flagged. The detail message lists up to five offending targets along with the conflicting PROTEIN_ID values seen.
+53. **UNIPROT_ID is string (VARCHAR)** — WARN.
+54. **UNIPROT_ID has no leading/trailing whitespace** — FAIL.
+55. **UNIPROT_ID has no null values** — FAIL.
+56. **UNIPROT_ID is consistent within each TARGET_ID** — FAIL. Groups rows by `TARGET_ID` and counts distinct `UNIPROT_ID` values per group; if any group has more than one, the row group is flagged. The detail message lists up to five offending targets along with the conflicting UNIPROT_ID values seen.
 
 ### `PROTEIN_NAME` (VARCHAR)
 
-The protein name. Same string trio as `PROTEIN_ID`:
+The protein name. Same string trio as `UNIPROT_ID`:
 
 - **PROTEIN_NAME is string (VARCHAR)** — WARN.
 - **PROTEIN_NAME has no leading/trailing whitespace** — FAIL.
 - **PROTEIN_NAME has no null values** — FAIL.
+
+### `UNIQUE_PROTEIN_ID` (VARCHAR)
+
+Format `<names>_<keys>`: split on a single `_` into a names block and a keys block, each a `|`-separated list. This supports single proteins and protein complexes:
+
+- Single protein — `WDR5_PK1`
+- 2-protein complex — `WDR5|BRD4_PK1|PK2`
+- 3-protein complex — `A|B|C_K1|K2|K3`
+
+The names and keys lists must have **equal length** (one purification key per protein) and every segment must be non-empty. Any number of proteins is allowed. Segment contents are not otherwise validated.
+
+- **UNIQUE_PROTEIN_ID is string (VARCHAR)** — WARN.
+- **UNIQUE_PROTEIN_ID has no leading/trailing whitespace** — FAIL.
+- **UNIQUE_PROTEIN_ID has no null values** — FAIL.
+- **UNIQUE_PROTEIN_ID matches `<names>_<keys>` with matching `|` counts** — FAIL. Lists up to five offending values in the log message.
 
 ### `INCUBATION_VOLUME (uL)` (FLOAT)
 
@@ -337,7 +357,7 @@ The orchestrator passes the following keys via `context`:
 - `providers` — list of valid provider acronyms loaded from `Providers.csv`
 - `data_generators` — set of valid data-generator names from the `data_generator_name` column of `Providers.csv`
 - `libraries` — list of registered library names (filename stems from `MasterLists/`)
-- `meta_columns` — list of canonical column names from `ASMS Meta Data.csv`
+- `meta_columns` — list of canonical column names from `RawDataColumns.csv`
 - `output_dir` — the same folder as the log file (useful for writing supplementary report CSVs)
 - `df` — the input CSV pre-loaded as a `pandas.DataFrame` with fully-duplicate rows dropped (for column-content checks). Will be `None` if the file could not be parsed.
 - `masterlist_dir` — path to the master-lists folder, for checks that load a specific library file (resolved from the `LIBRARY_NAME` column).

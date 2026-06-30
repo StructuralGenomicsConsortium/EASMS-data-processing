@@ -18,8 +18,8 @@ This repository contains a Python-based data curation pipeline for processing Af
 
 - **[USAGE.md](USAGE.md)** — environment setup, run commands, `--start-from` / `--end-at` flags, and **running on Google Cloud Storage (GCP)**.
 - **[QUALITY_CHECKS.md](QUALITY_CHECKS.md)** — Step 0 (input QC): every check, severity, and report file produced.
-- **[PIPELINE.md](PIPELINE.md)** — Steps 1–9 (data processing): what each step does, output layout, resuming.
-- **[POST_QC.md](POST_QC.md)** — Post-pipeline QC: 23 checks that run after Step 8 to catch regressions in the pipeline's own output.
+- **[PIPELINE.md](PIPELINE.md)** — Steps 1–8 (data processing): what each step does, output layout, resuming.
+- **[POST_QC.md](POST_QC.md)** — Post-pipeline QC: 23 checks that run after Step 7 to catch regressions in the pipeline's own output.
 
 ## Requirements
 
@@ -33,15 +33,17 @@ The pipeline needs two kinds of input: the **raw data** to process, and a few **
 
 4. **`Providers.csv`** — valid provider acronyms and data-generator names (columns `acronym`, `name`, `data_generator_name`). The real file is gitignored (private company info); copy [Providers_sample.csv](Providers_sample.csv) to `Providers.csv` and fill in real values. Default location: this repo root; override with `--providers-csv`.
 
-5. **`ASMS Meta Data.csv`** — canonical column-name reference. Row 1 lists every column name a raw CSV must contain; row 2 holds data types (informational only). QC fails a file when its columns don't match this list. Default location: this repo root; override with `--meta-csv`.
+5. **`RawDataColumns.csv`** — canonical column-name reference. Row 1 lists every column name a raw CSV must contain; row 2 holds data types (informational only). QC fails a file when its columns don't match this list. Default location: this repo root; override with `--meta-csv`.
 
-By default, the **config/reference files (3–5) are read from this repo** — so you only need to point `--input-file`/`--input-dir` at the data. Each can be overridden to a shared folder or a `gs://` path. See [USAGE.md](USAGE.md) for the full flag list and examples.
+6. **`ColumnActions.xlsx`** — drives the Step 8 column split. Two columns: `Column name` and `Action`. Columns tagged **`data`** go to the final ML data file (`Step8_FinalData/`, Parquet); columns tagged **`metadata`** go to a metadata CSV (`Step8_Metadata/`); columns tagged **`-`** are dropped. Edit this file to change what lands where — no code change needed. Default location: this repo root; override with `--column-actions`.
+
+By default, the **config/reference files (3–6) are read from this repo** — so you only need to point `--input-file`/`--input-dir` at the data. Each can be overridden to a shared folder or a `gs://` path. See [USAGE.md](USAGE.md) for the full flag list and examples.
 
 ## Data Inputs (file formats)
 
 ### Raw data (`--input-file` / `--input-dir`)
 
-**ASMS results CSV files.** Each row is a compound–protein measurement with target/non-target intensities, replicates, pool info, and protein metadata. Pass a single file with `--input-file`, or a folder of CSVs with `--input-dir` (every `*.csv` in it is processed — no special subfolder name required). The required column names are defined by `ASMS Meta Data.csv` (see below).
+**ASMS results CSV files.** Each row is a compound–protein measurement with target/non-target intensities, replicates, pool info, and protein metadata. Pass a single file with `--input-file`, or a folder of CSVs with `--input-dir` (every `*.csv` in it is processed — no special subfolder name required). The required column names are defined by `RawDataColumns.csv` (see below).
 
 ### `MasterLists/`
 
@@ -67,7 +69,7 @@ genericrx,GenericRx Therapeutics,ASMS_GENERICRX
 
 This file is gitignored; [Providers_sample.csv](Providers_sample.csv) has placeholder values. Copy it to `Providers.csv` and replace with real entries.
 
-### `ASMS Meta Data.csv`
+### `RawDataColumns.csv`
 
 The **canonical column-name reference** for raw ASMS results files. The QC step (Check 7) reads it and compares the columns of each raw CSV against this list — files with missing or extra columns fail QC and are skipped.
 
@@ -78,7 +80,7 @@ Format:
 
 Only column **names** are compared (not types and not order). Whitespace around names is stripped and accidental duplicate columns are collapsed, so a stray trailing space won't cause a false failure.
 
-To change which columns are required, edit `ASMS Meta Data.csv` directly — no code change needed.
+To change which columns are required, edit `RawDataColumns.csv` directly — no code change needed.
 
 ## Sample Data
 
@@ -95,7 +97,11 @@ Recent changes to the pipeline:
 
 - **Local *and* Google Cloud Storage** — pass local paths or `gs://` URLs anywhere; the code auto-detects. See the GCP section in [USAGE.md](USAGE.md).
 - **File or folder input** — `--input-file` for one CSV, `--input-dir` for a folder. The old required `RawData/` subfolder is gone; output `ProcessedData_<name>/` is created next to the input (or at `--output-dir`).
-- **Config as input** — `MasterLists/`, `Providers.csv`, `ASMS Meta Data.csv` default to this repo and are each overridable (`--masterlists-dir`, `--providers-csv`, `--meta-csv`), including to `gs://`.
+- **Config as input** — `MasterLists/`, `Providers.csv`, `RawDataColumns.csv`, `ColumnActions.xlsx` default to this repo and are each overridable (`--masterlists-dir`, `--providers-csv`, `--meta-csv`, `--column-actions`), including to `gs://`.
 - **Masterlist resolution simplified** — the library is read from the `LIBRARY_NAME` column; `MasterList_Information.xlsx` is no longer used. Master lists may be `.xlsx` **or** `.csv`.
-- **Column updates** — units added to `INCUBATION_VOLUME (uL)`, `PROTEIN_CONC (uM)`, `COMPOUND_CONC (uM)`, `RT (min)`; `MS_REPRODUCIBILITY` spelling corrected; new `PROTEIN_NAME` (VARCHAR) column with checks.
+- **Final-step redesign** — the old Step 8/9 `DesiredColumns` selections are replaced by a single Step 8 driven by `ColumnActions.xlsx`: `data`-tagged columns → `Step8_FinalData/` (Parquet), `metadata`-tagged columns → `Step8_Metadata/` (CSV), `-` dropped. Step 7 remains the full ML-ready file; post-pipeline QC now validates Step 7. Steps 7–8 output files are named by `UNIQUE_PROTEIN_ID` (Steps 1–6 by `TARGET_ID`). `--start-from`/`--end-at` now span 0–8.
+- **Per-batch protein summary** — each file gets a `proteins_in_batch.csv` (one row per `TARGET_ID`: `PROTEIN_NUMBER`, `UNIPROT_ID`, `PROTEIN_SEQ`, `TARGET_ID`).
+- **Column updates** — units added to `INCUBATION_VOLUME (uL)`, `PROTEIN_CONC (uM)`, `COMPOUND_CONC (uM)`, `RT (min)`; `MS_REPRODUCIBILITY` spelling corrected; new `PROTEIN_NAME` (VARCHAR) column with checks; `PROTEIN_ID` renamed to `UNIPROT_ID`; new `UNIQUE_PROTEIN_ID` (VARCHAR, format `<names>_<keys>` with `|`-separated lists for protein complexes) column with checks.
+- **TARGET_ID complexes** — `TARGET_ID` now also supports complexes: `<names>_<keys>_<ranges>` as `|`-separated lists of equal length (e.g. `EXOSC7|EXOSC6|EXOSC8_Q15024|Q5RKV6|Q96B26_1_291|1_272|1_276`).
 - **CHIRAL_SELECTIVITY report** — failing rows are written to `chiral_selectivity_not_allowed_report.csv` for investigation (the QC log keeps just the count).
+- **Faster fingerprints** — Step 7 extraction parses each SMILES once, batches the generators, and dedupes unique SMILES (drop-in; the original provider version is archived as `fingerprint_extraction_original.py`).

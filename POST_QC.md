@@ -1,18 +1,18 @@
 # Post-Pipeline Quality Checks
 
-Runs once per input CSV **after** every per-target Parquet has been written by Step 8. Its job is to catch regressions in pipeline-produced columns — *not* to re-validate the raw input (that's [QUALITY_CHECKS.md](QUALITY_CHECKS.md)).
+Runs once per input CSV **after** every per-target Parquet has been written by Step 7. Its job is to catch regressions in pipeline-produced columns — *not* to re-validate the raw input (that's [QUALITY_CHECKS.md](QUALITY_CHECKS.md)). It validates the **full Step 7 output** (not the Step 8 final-data file) because some checked columns — e.g. `NTC_VALUE`, `AIRCHECK_LABEL`, `MassSpec_Detected` — may be dropped from the final data by `ColumnActions.xlsx`.
 
 This document covers when post-QC runs, what each check verifies, and the supplementary files it produces. For the entry point in the code, see [src/post_quality_check.py](src/post_quality_check.py).
 
 ## When it runs
 
-Inside `process_csv_files`, right after the per-target Steps 3–9 loop ends. Gated by `--end-at >= 8` (Step 8 must have produced Parquet output). If the gate isn't met — or the `Step8_FullColumns/` folder is missing/empty — post-QC writes a one-line *"skipped: no Parquet files found"* log and returns. It is **best-effort** and never blocks the rest of the pipeline.
+Inside `process_csv_files`, right after the per-target Steps 3–8 loop ends. Gated by `--end-at >= 7` (Step 7 must have produced Parquet output). If the gate isn't met — or the `Step7_WithFingerprints/` folder is missing/empty — post-QC writes a one-line *"skipped: no Parquet files found"* log and returns. It is **best-effort** and never blocks the rest of the pipeline.
 
 If **input QC fails** for a given file, the pipeline skips it entirely (including post-QC) — so the absence of a `PostQClog_*` file when QC failed is expected.
 
 ## Inputs
 
-- The directory `ProcessedData_<csv_basename>/Step8_FullColumns/` (one `.parquet` per target).
+- The directory `ProcessedData_<csv_basename>/Step7_WithFingerprints/` (one `.parquet` per target).
 - These are concatenated row-wise into a single DataFrame, and the checks run against the whole thing.
 
 ## Outputs

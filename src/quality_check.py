@@ -28,7 +28,7 @@ RDLogger.DisableLog("rdApp.*")
 MAX_FILE_SIZE_GB = 10
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_GB * 1024 ** 3
 
-MIN_BATCH_NUMBER = 0
+MIN_BATCH_NUMBER = 1
 MAX_BATCH_NUMBER = 10000
 
 # Filename format: asms_<provider>_<batch>_<library>_<date>.csv
@@ -182,7 +182,7 @@ def _load_associated_library_formulas(df, masterlist_dir):
 
 
 def _load_varchar_columns(meta_csv_path):
-    """Return the set of column names declared as VARCHAR in ASMS Meta Data.csv.
+    """Return the set of column names declared as VARCHAR in RawDataColumns.csv.
 
     Reads row 2 (the type row) and returns every column whose declared type is
     `VARCHAR` (case-insensitive). Returns an empty set if the file is missing,
@@ -211,7 +211,7 @@ def _load_dataframe(file_path, varchar_columns=None):
     per-column metrics. Returns None if the file cannot be parsed.
 
     `varchar_columns` lists names that should be forced to string dtype on
-    read — typically every column declared `VARCHAR` in `ASMS Meta Data.csv`.
+    read — typically every column declared `VARCHAR` in `RawDataColumns.csv`.
     This stops pandas from auto-casting numeric-looking strings (e.g. dates
     like `20250512`) to integers.
     """
@@ -229,7 +229,7 @@ def _load_dataframe(file_path, varchar_columns=None):
 
 
 def _load_meta_columns(meta_csv_path):
-    """Load the valid column names from the ASMS Meta Data reference CSV.
+    """Load the valid column names from the RawDataColumns reference CSV.
 
     The reference file's header row lists the canonical column names; the
     second row holds data types. Whitespace is stripped and duplicates
@@ -344,9 +344,9 @@ def check_csv_parseable(file_path, **_):
 
 
 def check_columns_match_metadata(file_path, meta_columns=None, **_):
-    """File's column names match the reference list in ASMS Meta Data.csv."""
+    """File's column names match the reference list in RawDataColumns.csv."""
     if meta_columns is None:
-        return False, "metadata reference unavailable (ASMS Meta Data.csv not found)"
+        return False, "metadata reference unavailable (RawDataColumns.csv not found)"
     if not meta_columns:
         return False, "metadata reference has no columns"
 
@@ -363,14 +363,23 @@ def check_columns_match_metadata(file_path, meta_columns=None, **_):
     extra   = [c for c in file_cols    if c not in valid]
 
     if not missing and not extra:
-        return True, "columns match ASMS Meta Data.csv reference"
+        return True, "columns match RawDataColumns.csv reference", "PASS"
 
-    parts = ["columns do not match ASMS Meta Data.csv"]
+    # Missing required columns is a hard failure. Extra (unexpected) columns are
+    # only a warning -- they are harmless because column selection in later steps
+    # drops anything not in the desired column sets, so the pipeline runs normally.
     if missing:
-        parts.append(f"missing required columns ({len(missing)}): {missing}")
-    if extra:
-        parts.append(f"extra columns not in reference ({len(extra)}): {extra}")
-    return False, "; ".join(parts)
+        parts = [f"missing required columns ({len(missing)}): {missing}"]
+        if extra:
+            parts.append(f"extra columns not in reference ({len(extra)}): {extra}")
+        return False, "; ".join(parts), "FAIL"
+
+    return (
+        True,
+        f"all required columns present; extra columns not in reference will be "
+        f"dropped in later steps ({len(extra)}): {extra}",
+        "WARN",
+    )
 
 
 # ---------- Filename-format checks ----------
@@ -1130,12 +1139,33 @@ def check_pool_id_no_nulls(file_path, df=None, **_):
 
 # ---------- TARGET_ID checks ----------
 
-# Format: <name>_<UniprotID>_<startAA>_<endAA>
-# `name` and `UniprotID` are alphanumeric; start/end are positive integers.
-# The Uniprot_ID segment is currently only checked structurally — see the
-# TODO at the bottom of this block for plans to validate it against a
-# registered list when that list becomes available.
-TARGET_ID_RE = re.compile(r"^([A-Za-z0-9]+)_([A-Za-z0-9]+)_(\d+)_(\d+)$")
+# Format: <names>_<keys>_<ranges>
+#   Each block is a '|'-separated list of equal length (one entry per protein),
+#   supporting single proteins and complexes of any size:
+#     - Single:    WDR5_P61964_2_334
+#     - 3-complex: EXOSC7|EXOSC6|EXOSC8_Q15024|Q5RKV6|Q96B26_1_291|1_272|1_276
+#   <names> and <keys> are free-form non-empty tokens; each <ranges> entry is
+#   '<start>_<end>' (positive integers, start < end). The value is split on only
+#   the FIRST two underscores (split('_', 2)) so the underscores inside the
+#   start/end ranges stay intact.
+# The keys segment is currently only checked structurally — see the TODO at the
+# bottom of this block for plans to validate it against a registered list.
+
+
+def _parse_target_id(value):
+    """Split a TARGET_ID into (names, keys, ranges) '|'-separated lists, or None
+    if it does not split into three '_'-separated blocks. `ranges` entries are
+    the raw '<start>_<end>' strings (parsed by the individual checks)."""
+    blocks = str(value).strip().split("_", 2)
+    if len(blocks) != 3:
+        return None
+    return blocks[0].split("|"), blocks[1].split("|"), blocks[2].split("|")
+
+
+def _is_int_range(r):
+    """True if `r` is '<int>_<int>'."""
+    se = r.split("_")
+    return len(se) == 2 and se[0].isdigit() and se[1].isdigit()
 
 
 def check_target_id_is_string(file_path, df=None, **_):
@@ -1154,37 +1184,52 @@ def check_target_id_no_nulls(file_path, df=None, **_):
 
 
 def check_target_id_format(file_path, df=None, **_):
-    """TARGET_ID values match '<name>_<UniprotID>_<startAA>_<endAA>'."""
+    """TARGET_ID values match '<names>_<keys>_<ranges>' with matching
+    '|'-separated counts; each range is '<start>_<end>' (positive integers).
+    Supports single proteins and complexes."""
     ok, fail = _ensure_df_and_columns(df, "TARGET_ID")
     if not ok:
         return False, fail
     invalid = []
     for val in df["TARGET_ID"].dropna().unique():
-        if not TARGET_ID_RE.match(str(val).strip()):
+        parsed = _parse_target_id(val)
+        if parsed is None:
+            invalid.append(str(val))
+            continue
+        names, keys, ranges = parsed
+        n = len(names)
+        if (len(keys) != n or len(ranges) != n
+                or any(x == "" for x in names) or any(x == "" for x in keys)
+                or not all(_is_int_range(r) for r in ranges)):
             invalid.append(str(val))
     if not invalid:
-        return True, "all TARGET_ID values match '<name>_<UniprotID>_<startAA>_<endAA>'"
+        return True, "all TARGET_ID values match '<names>_<keys>_<ranges>'"
     preview = invalid[:5]
     suffix = f" (and {len(invalid) - 5} more)" if len(invalid) > 5 else ""
     return False, f"invalid TARGET_ID value(s): {preview}{suffix}"
 
 
 def check_target_id_start_lt_end(file_path, df=None, **_):
-    """The two trailing numeric segments of TARGET_ID satisfy start < end."""
+    """Every '<start>_<end>' range in TARGET_ID satisfies start < end (checked
+    per protein for complexes)."""
     ok, fail = _ensure_df_and_columns(df, "TARGET_ID")
     if not ok:
         return False, fail
-    bad = []   # list of (target_id, start, end)
+    bad = []
     for val in df["TARGET_ID"].dropna().unique():
-        m = TARGET_ID_RE.match(str(val).strip())
-        if not m:
+        parsed = _parse_target_id(val)
+        if parsed is None:
             continue   # caught by format check
-        start, end = int(m.group(3)), int(m.group(4))
-        if start >= end:
-            bad.append((str(val), start, end))
+        _, _, ranges = parsed
+        for r in ranges:
+            if _is_int_range(r):
+                start, end = (int(x) for x in r.split("_"))
+                if start >= end:
+                    bad.append(f"'{val}' ({r})")
+                    break
     if not bad:
-        return True, "all TARGET_IDs have start < end"
-    preview = [f"'{s}' (start={a}, end={b})" for s, a, b in bad[:5]]
+        return True, "all TARGET_ID ranges have start < end"
+    preview = bad[:5]
     suffix = f" (and {len(bad) - 5} more)" if len(bad) > 5 else ""
     return False, f"TARGET_ID(s) with start >= end: {preview}{suffix}"
 
@@ -1216,8 +1261,8 @@ def check_target_id_same_compound_count(file_path, df=None, **_):
 
 # TODO: Uniprot_ID validation against a registry.
 # When a list of valid Uniprot_IDs becomes available, add a check here that
-# pulls the UniprotID segment from the regex (group 2) and verifies it
-# against the registry. Suggested wiring:
+# pulls the keys block (the second '|'-list from _parse_target_id) and verifies
+# each entry against the registry. Suggested wiring:
 #   1. Load the list in the orchestrator and pass it via context as
 #      `uniprot_ids` (similar to `providers` / `libraries`).
 #   2. Implement check_target_id_uniprot_registered(file_path, df=None,
@@ -1274,21 +1319,21 @@ def check_protein_number_consecutive_from_1(file_path, df=None, **_):
     return True, "; ".join(parts), "WARN"
 
 
-# ---------- PROTEIN_ID checks ----------
+# ---------- UNIPROT_ID checks ----------
 
-def check_protein_id_is_string(file_path, df=None, **_):
-    """PROTEIN_ID dtype is string (VARCHAR-equivalent)."""
-    return _check_column_is_string(df, "PROTEIN_ID")
-
-
-def check_protein_id_no_whitespace(file_path, df=None, **_):
-    """PROTEIN_ID values have no leading/trailing whitespace."""
-    return _check_column_no_whitespace(df, "PROTEIN_ID")
+def check_uniprot_id_is_string(file_path, df=None, **_):
+    """UNIPROT_ID dtype is string (VARCHAR-equivalent)."""
+    return _check_column_is_string(df, "UNIPROT_ID")
 
 
-def check_protein_id_no_nulls(file_path, df=None, **_):
-    """PROTEIN_ID has no null values."""
-    return _check_column_no_nulls(df, "PROTEIN_ID")
+def check_uniprot_id_no_whitespace(file_path, df=None, **_):
+    """UNIPROT_ID values have no leading/trailing whitespace."""
+    return _check_column_no_whitespace(df, "UNIPROT_ID")
+
+
+def check_uniprot_id_no_nulls(file_path, df=None, **_):
+    """UNIPROT_ID has no null values."""
+    return _check_column_no_nulls(df, "UNIPROT_ID")
 
 
 # ---------- PROTEIN_NAME checks ----------
@@ -1306,6 +1351,70 @@ def check_protein_name_no_whitespace(file_path, df=None, **_):
 def check_protein_name_no_nulls(file_path, df=None, **_):
     """PROTEIN_NAME has no null values."""
     return _check_column_no_nulls(df, "PROTEIN_NAME")
+
+
+# ---------- UNIQUE_PROTEIN_ID checks ----------
+
+# Format: <names>_<keys>
+#   <names> and <keys> are each '|'-separated lists; the value is split on a
+#   single '_' into the names block and the keys block.
+#   - Single protein:    WDR5_PK1
+#   - 2-protein complex: WDR5|BRD4_PK1|PK2
+#   - 3-protein complex: A|B|C_K1|K2|K3
+#   The lists must have EQUAL length (one purification key per protein name)
+#   and every segment must be non-empty. Any number of proteins is allowed.
+#   Segment contents are not otherwise validated.
+
+
+def _parse_unique_protein_id(value):
+    """Return (names, keys) lists for a UNIQUE_PROTEIN_ID value, or None if it is
+    not exactly two '_'-separated blocks."""
+    blocks = str(value).strip().split("_")
+    if len(blocks) != 2:
+        return None
+    return blocks[0].split("|"), blocks[1].split("|")
+
+
+def check_unique_protein_id_is_string(file_path, df=None, **_):
+    """UNIQUE_PROTEIN_ID dtype is string (VARCHAR-equivalent)."""
+    return _check_column_is_string(df, "UNIQUE_PROTEIN_ID")
+
+
+def check_unique_protein_id_no_whitespace(file_path, df=None, **_):
+    """UNIQUE_PROTEIN_ID values have no leading/trailing whitespace."""
+    return _check_column_no_whitespace(df, "UNIQUE_PROTEIN_ID")
+
+
+def check_unique_protein_id_no_nulls(file_path, df=None, **_):
+    """UNIQUE_PROTEIN_ID has no null values."""
+    return _check_column_no_nulls(df, "UNIQUE_PROTEIN_ID")
+
+
+def check_unique_protein_id_format(file_path, df=None, **_):
+    """UNIQUE_PROTEIN_ID matches '<names>_<keys>' where <names> and <keys> are
+    '|'-separated lists of equal length (one purification key per protein name;
+    any number of proteins)."""
+    ok, fail = _ensure_df_and_columns(df, "UNIQUE_PROTEIN_ID")
+    if not ok:
+        return False, fail
+    invalid = []
+    for val in df["UNIQUE_PROTEIN_ID"].dropna().unique():
+        parsed = _parse_unique_protein_id(val)
+        if parsed is None:
+            invalid.append(str(val))
+            continue
+        names, keys = parsed
+        if (any(n == "" for n in names) or any(k == "" for k in keys)
+                or len(names) != len(keys)):
+            invalid.append(str(val))
+    if not invalid:
+        return True, (
+            "all UNIQUE_PROTEIN_ID values match '<names>_<keys>' with matching "
+            "'|'-separated name/key counts"
+        )
+    preview = invalid[:5]
+    suffix = f" (and {len(invalid) - 5} more)" if len(invalid) > 5 else ""
+    return False, f"invalid UNIQUE_PROTEIN_ID value(s): {preview}{suffix}"
 
 
 # ---------- INCUBATION_VOLUME checks ----------
@@ -1846,28 +1955,28 @@ def check_incubation_volume_no_nulls(file_path, df=None, **_):
     return _check_column_no_nulls(df, "INCUBATION_VOLUME (uL)")
 
 
-def check_protein_id_consistent_per_target(file_path, df=None, **_):
-    """Each TARGET_ID maps to exactly one PROTEIN_ID across all its rows."""
-    ok, fail = _ensure_df_and_columns(df, "TARGET_ID", "PROTEIN_ID")
+def check_uniprot_id_consistent_per_target(file_path, df=None, **_):
+    """Each TARGET_ID maps to exactly one UNIPROT_ID across all its rows."""
+    ok, fail = _ensure_df_and_columns(df, "TARGET_ID", "UNIPROT_ID")
     if not ok:
         return False, fail
-    distinct_per_target = df.groupby("TARGET_ID")["PROTEIN_ID"].nunique()
+    distinct_per_target = df.groupby("TARGET_ID")["UNIPROT_ID"].nunique()
     inconsistent = distinct_per_target[distinct_per_target > 1]
     if inconsistent.empty:
         return True, (
-            f"each TARGET_ID maps to a single PROTEIN_ID "
+            f"each TARGET_ID maps to a single UNIPROT_ID "
             f"({len(distinct_per_target)} targets checked)"
         )
     preview_lines = []
     for tid in inconsistent.index[:5]:
-        ids = df.loc[df["TARGET_ID"] == tid, "PROTEIN_ID"].dropna().unique().tolist()
+        ids = df.loc[df["TARGET_ID"] == tid, "UNIPROT_ID"].dropna().unique().tolist()
         preview_lines.append(f"'{tid}' -> {ids}")
     suffix = (
         f" (and {len(inconsistent) - 5} more)"
         if len(inconsistent) > 5 else ""
     )
     return False, (
-        f"{len(inconsistent)} TARGET_ID(s) map to multiple PROTEIN_IDs: "
+        f"{len(inconsistent)} TARGET_ID(s) map to multiple UNIPROT_IDs: "
         f"{'; '.join(preview_lines)}{suffix}"
     )
 
@@ -1936,7 +2045,7 @@ SECTIONS = [
         (f"File size is under {MAX_FILE_SIZE_GB} GB", check_file_size_under_limit),
         ("File encoding is UTF-8",                   check_encoding_is_utf8),
         ("File is a CSV (parseable content)",        check_csv_parseable),
-        ("Columns match ASMS Meta Data.csv reference", check_columns_match_metadata),
+        ("Columns match RawDataColumns.csv reference", check_columns_match_metadata),
     ]),
     ("Filename Format Checks", [
         ("Filename has no special characters or spaces", check_filename_no_special_chars),
@@ -1997,15 +2106,20 @@ SECTIONS = [
         ("PROTEIN_NUMBER is integer (INT)",                              check_protein_number_is_int),
         ("PROTEIN_NUMBER has no null values",                            check_protein_number_no_nulls),
         ("PROTEIN_NUMBER values form {1, 2, ..., N}",                    check_protein_number_consecutive_from_1),
-        # PROTEIN_ID
-        ("PROTEIN_ID is string (VARCHAR)",                               check_protein_id_is_string),
-        ("PROTEIN_ID has no leading/trailing whitespace",                check_protein_id_no_whitespace),
-        ("PROTEIN_ID has no null values",                                check_protein_id_no_nulls),
-        ("PROTEIN_ID is consistent within each TARGET_ID",               check_protein_id_consistent_per_target),
+        # UNIPROT_ID
+        ("UNIPROT_ID is string (VARCHAR)",                               check_uniprot_id_is_string),
+        ("UNIPROT_ID has no leading/trailing whitespace",                check_uniprot_id_no_whitespace),
+        ("UNIPROT_ID has no null values",                                check_uniprot_id_no_nulls),
+        ("UNIPROT_ID is consistent within each TARGET_ID",               check_uniprot_id_consistent_per_target),
         # PROTEIN_NAME
         ("PROTEIN_NAME is string (VARCHAR)",                             check_protein_name_is_string),
         ("PROTEIN_NAME has no leading/trailing whitespace",              check_protein_name_no_whitespace),
         ("PROTEIN_NAME has no null values",                              check_protein_name_no_nulls),
+        # UNIQUE_PROTEIN_ID
+        ("UNIQUE_PROTEIN_ID is string (VARCHAR)",                        check_unique_protein_id_is_string),
+        ("UNIQUE_PROTEIN_ID has no leading/trailing whitespace",         check_unique_protein_id_no_whitespace),
+        ("UNIQUE_PROTEIN_ID has no null values",                         check_unique_protein_id_no_nulls),
+        ("UNIQUE_PROTEIN_ID matches <names>_<keys> (| counts match)",    check_unique_protein_id_format),
         # INCUBATION_VOLUME
         ("INCUBATION_VOLUME is numeric (FLOAT)",                         check_incubation_volume_is_float),
         ("INCUBATION_VOLUME values are positive (> 0)",                  check_incubation_volume_positive),
@@ -2214,7 +2328,7 @@ def run_quality_checks(file_path, log_dir, providers_csv=None, masterlist_dir=No
         log_dir (str):         Directory where the log file is written.
         providers_csv (str):   Path to Providers.csv (acronym list). Optional.
         masterlist_dir (str):  Path to the MasterLists/ folder. Optional.
-        meta_csv (str):        Path to ASMS Meta Data.csv (valid columns). Optional.
+        meta_csv (str):        Path to RawDataColumns.csv (valid columns). Optional.
 
     Returns:
         tuple[bool, list[tuple[str, str]]]:
@@ -2233,7 +2347,7 @@ def run_quality_checks(file_path, log_dir, providers_csv=None, masterlist_dir=No
     # `df` is the input CSV loaded once with fully-duplicate rows dropped, so
     # column-content checks operate on the same cleaned data the pipeline would
     # see after Step 3's drop_duplicates().
-    # Force every VARCHAR-declared column in ASMS Meta Data.csv to load as str,
+    # Force every VARCHAR-declared column in RawDataColumns.csv to load as str,
     # so pandas doesn't silently auto-cast numeric-looking strings (e.g. dates
     # like 20250512) to int and trip the column-content type checks.
     varchar_cols = _load_varchar_columns(meta_csv)
