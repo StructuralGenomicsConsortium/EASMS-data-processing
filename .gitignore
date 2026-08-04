@@ -1,13 +1,22 @@
 # Data folders (real datasets, kept locally only)
 ProcessedData*/
-RawData/
+RawData*/
 MasterLists/
+MultiBatch_*/
+MultiBatchResults/
+
+# Raw ASMS data exports (contain protein names / compound data)
+asms_sgcto_*.csv
 
 # Provider list (real version contains private company info; sample is tracked)
 Providers.csv
 
 # Local-only scratch / unused scripts
 src/tempfiles/
+
+# Multi-batch analysis / exploration scripts: track code only, never data/output
+multibatchcodes/*
+!multibatchcodes/*.py
 
 # Python
 __pycache__/
