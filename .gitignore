@@ -17,6 +17,7 @@ src/tempfiles/
 # Multi-batch analysis / exploration scripts: track code only, never data/output
 multibatchcodes/*
 !multibatchcodes/*.py
+!multibatchcodes/README.md
 
 # Python
 __pycache__/
